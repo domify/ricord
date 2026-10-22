@@ -56,6 +56,8 @@ pub abstract class ResultSet
   abstract def each(&block : -> T) : Nil | T | DatabaseError forall T
   abstract def move_next : Bool | DatabaseError
   abstract def read : Value | DatabaseError
+  # The next text or bytes column on the running fiber's tape; nil for NULL.
+  abstract def read_tape : Tape::String | Nil | DatabaseError
 
   def column_count : Int32
     column_names.size
@@ -161,6 +163,12 @@ pub class LibraryResultSet < ResultSet
     value = @result.read
     return @owner.statement_error(value, "query", @sql, @parameters) if value.is_a?(DBError)
     @owner.normalize(value)
+  end
+
+  def read_tape : Tape::String | Nil | DatabaseError
+    value = @result.read_tape
+    return @owner.statement_error(value, "query", @sql, @parameters) if value.is_a?(DBError)
+    value
   end
 end
 
