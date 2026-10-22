@@ -23,9 +23,11 @@ import grant/transaction
 # all at once. Nothing is collected and nothing is copied on the way.
 #
 # A model is declared as a Grant model is, inside `model ... do` instead of
-# `class ... < Grant::Base` (doc/TAPE_MODEL.md):
+# `class ... < Grant::Base` (doc/TAPE_MODEL.md). Import it by name for that:
 #
-#     ::Grant::TapeModel.model User do
+#     import grant/tape_model::{model}
+#
+#     model User do
 #       connection sqlite
 #       table users
 #       column id : Int64, primary: true

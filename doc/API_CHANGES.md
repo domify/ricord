@@ -36,7 +36,9 @@ puts user.name.upcase              # a String
 Now:
 
 ```ris
-::Grant::TapeModel.model User do
+import grant/tape_model::{model}
+
+model User do
   connection sqlite
   table users
   column id : Int64, primary: true
@@ -55,7 +57,7 @@ What else changes for code that used a `Base` model:
 
 | Was | Now |
 |---|---|
-| `class User < Grant::Base ... end` | `::Grant::TapeModel.model User do ... end` |
+| `class User < Grant::Base ... end` | `model User do ... end`, with `import grant/tape_model::{model}` |
 | `user.name : String` | `Tape::String`; `to_heap` for a `String` |
 | a record kept in a class variable, cache or job | refused by the compiler; keep `to_heap` data or the id |
 | results `Array(User)` | `Tape::Array(User)` |

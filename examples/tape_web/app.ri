@@ -17,16 +17,16 @@ import web/web/router::{Router, RouteHandler}
 import web/web/context::{Context}
 import web/web/handler::{Handler, chain}
 import web/web/override::{OverrideMethodHandler}
-import grant/grant/tape_model
+import grant/grant/tape_model::{model}
 
-::Grant::TapeModel.model Team do
+model Team do
   connection sqlite
   table teams
   column id : Int64, primary: true
   column title : String
 end
 
-::Grant::TapeModel.model User do
+model User do
   connection sqlite
   table users
   column id : Int64, primary: true

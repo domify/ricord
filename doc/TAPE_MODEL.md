@@ -15,10 +15,11 @@ web.
 ## Declaring a model
 
 A tape model is declared with Grant's own declarations, in `model ... do` instead of
-`class ... < Grant::Base`:
+`class ... < Grant::Base` (`import grant/tape_model::{model}`, or call it as
+`::Grant::TapeModel.model`):
 
 ```ris
-::Grant::TapeModel.model User do
+model User do
   connection sqlite
   table users
   column id : Int64, primary: true
