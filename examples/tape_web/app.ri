@@ -1,5 +1,6 @@
 # One app route on a tape-backed model: the request finds a user, renders
-# its page and answers, and the request's tape frees the record with it.
+# its page onto the tape and sends it from there, and the request's tape frees
+# the record and the page with it.
 module app
 
 import std/text
@@ -21,19 +22,20 @@ end
 
 pub def app_routes : Router
   router = Router.new
+  # The page goes from the tape straight to the socket with `send`: no heap
+  # copy. The server runs each request in a tape, so this `tape` shares it.
   router.get "/users/:id" do |env|
-    html = ""
     tape do
       user = User.find(env.params.url["id"].to_i64).or_panic
       if user.is_a?(User)
         user.update(visits: (user.visits || 0_i64) + 1).or_panic
-        html = user_page(user).to_heap
+        env.response.send(user_page(user))
       else
         env.response.status_code = 404
-        html = "not found"
+        env.response.send("not found".as_tape)
       end
     end
-    html
+    ""
   end
   router
 end
