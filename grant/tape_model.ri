@@ -389,6 +389,18 @@ pub macro model(name, &block)
       {% index += 1 %}
     {% end %}
 
+    # Sets the column *column* names, for a relation that fixes one (an
+    # association's foreign key).
+    def __assign_column(column : String, value : ::Grant::Adapter::Driver::Value) : Nil
+      case column
+      {% for column in columns %}
+        when {{ column[0] }}
+          self.{{ column[0].id }} = value
+      {% end %}
+      end
+      nil
+    end
+
     def __primary_value : Int64?
       {{ primary_name.id }}
     end
@@ -769,8 +781,8 @@ pub macro model(name, &block)
         end
         {% if kind == "has_many" %}
           def {{ assoc }} : {{ target }}::Query
-            return {{ target }}::Query.preloaded(@__{{ assoc }}) if @state[{{ 2 + assoc_index }}]
-            {{ target }}.where({{ key }}: {{ primary_name.id }})
+            preloaded = @state[{{ 2 + assoc_index }}] ? @__{{ assoc }} : nil
+            {{ target }}::Query.owned({{ key.stringify }}, {{ primary_name.id }}, preloaded)
           end
         {% else %}
           def {{ assoc }} : {{ target }} | Nil | ::Grant::Error::ErrorBase
@@ -809,15 +821,46 @@ pub macro model(name, &block)
       def initialize(@groups : Array(Array(String)) = [[] of String], @args : Array(::Grant::Adapter::Driver::Value) = [] of ::Grant::Adapter::Driver::Value,
                      @order : String = "", @limit : Int32? = nil, @offset : Int32? = nil,
                      @includes : Array(String) = [] of String,
-                     @preloaded : Tape::Array({{ name }}) = Tape::Array({{ name }}).new(0), @from_preloaded : Bool = false)
+                     @preloaded : Tape::Array({{ name }}) = Tape::Array({{ name }}).new(0), @from_preloaded : Bool = false,
+                     @owner_key : String? = nil, @owner_id : ::Grant::Adapter::Driver::Value = nil)
       end
 
-      def self.preloaded(records : Tape::Array({{ name }})) : Query
-        new(preloaded: records, from_preloaded: true)
+      # The relation of an owner's has_many: `where(key: id)` that `build`
+      # and `create` give new records.
+      def self.owned(key : String, id : ::Grant::Adapter::Driver::Value, preloaded : Tape::Array({{ name }})? = nil) : Query
+        groups = [[{{ name }}.quote({{ name }}::TABLE) + "." + {{ name }}.quote(key) + (id.nil? ? " IS NULL" : " = ?")]]
+        args = [] of ::Grant::Adapter::Driver::Value
+        args << id unless id.nil?
+        if preloaded.nil?
+          new(groups, args, owner_key: key, owner_id: id)
+        else
+          new(groups, args, preloaded: preloaded, from_preloaded: true, owner_key: key, owner_id: id)
+        end
+      end
+
+      # A new record of this relation's owner, unsaved.
+      def build(**attributes) : {{ name }}
+        record = {{ name }}.new(**attributes)
+        key = @owner_key
+        record.__assign_column(key, @owner_id) unless key.nil?
+        record
+      end
+
+      # A record of this relation's owner, saved; see `persisted?`.
+      def create(**attributes) : {{ name }} | ::Grant::Error::ErrorBase
+        record = build(**attributes)
+        record.save!
+        record
+      end
+
+      def create_strict(**attributes) : {{ name }} | ::Grant::Error::ErrorBase
+        record = build(**attributes)
+        record.save_strict!
+        record
       end
 
       private def chain : Query
-        Query.new(@groups.map(&.dup), @args.dup, @order, @limit, @offset, @includes.dup)
+        Query.new(@groups.map(&.dup), @args.dup, @order, @limit, @offset, @includes.dup, owner_key: @owner_key, owner_id: @owner_id)
       end
 
       def where(**criteria) : Query

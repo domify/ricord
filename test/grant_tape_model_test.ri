@@ -150,6 +150,13 @@ tape do
   assert owner.is_a?(TapeTeam) && owner.title == "Core"
   assert core.users.count.or_panic == 1_i64
   assert user.posts.count.or_panic == 2_i64
+  # An association builds and creates records with the owner's key set.
+  third = user.posts.create_strict(title: "Third").or_panic
+  assert third.tape_user_id == user.id
+  assert user.posts.count.or_panic == 3_i64
+  third.delete.or_panic
+  dee = core.users.build(name: "Dee")
+  assert dee.team_id == core.id && dee.new_record?
 
   # Dirty tracking: a setter marks its column, save writes only those.
   user.score = 7_i64
