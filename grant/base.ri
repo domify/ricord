@@ -1659,16 +1659,8 @@ pub abstract class Base
       current_scope.reorder(field)
     end
 
-    def self.pluck(*fields : Symbol | String) : Array(Array(::Grant::Adapter::Driver::Value)) | ::Grant::Error::ErrorBase
-      current_scope.pluck_columns(fields.to_a.map { |field| field.to_s })
-    end
-
-    def self.pluck_tape(*fields : Symbol | String) : Tape::Array(Tape::Array(::Grant::Adapter::Driver::TapeValue)) | ::Grant::Error::ErrorBase
-      current_scope.pluck_tape_columns(fields.to_a.map { |field| field.to_s })
-    end
-
-    def self.pick_tape(*fields : Symbol | String) : Tape::Array(::Grant::Adapter::Driver::TapeValue) | Nil | ::Grant::Error::ErrorBase
-      current_scope.pick_tape(*fields)
+    def self.pluck(*fields : Symbol | String) : Tape::Array(Tape::Array(::Grant::Adapter::Driver::TapeValue)) | ::Grant::Error::ErrorBase
+      current_scope.pluck(*fields)
     end
 
     def self.ids : Array(::Grant::Adapter::Driver::Value) | ::Grant::Error::ErrorBase

@@ -1,4 +1,5 @@
 module test/grant_connection_w6_statement_invalid_sql_query_values_test
+import test/spec_helper::{heap_row}
 import std/indexable
 import grant
 import grant/base::{Base}
@@ -41,29 +42,43 @@ sql = "SELECT missing_col FROM w6_sql_things"
 # it: reports the statement of count, exists?, pluck, pick and ids
 w6_failure("missing_col") { W6SqlThing.where("missing_col = 1").count }
 w6_failure("missing_col") { W6SqlThing.where("missing_col = 1").exists? }
-w6_failure("missing_col") { W6SqlThing.where("missing_col = 1").pluck(:label) }
-w6_failure("missing_col") { W6SqlThing.where("missing_col = 1").pluck(:label, :amount) }
-w6_failure("missing_col") { W6SqlThing.where("missing_col = 1").pick(:label) }
+tape { w6_failure("missing_col") { W6SqlThing.where("missing_col = 1").pluck(:label) } }
+tape { w6_failure("missing_col") { W6SqlThing.where("missing_col = 1").pluck(:label, :amount) } }
+tape { w6_failure("missing_col") { W6SqlThing.where("missing_col = 1").pick(:label) } }
 
 # Native success checks exercise the actual projections and bound clauses.
 relation = W6SqlThing.where("amount = ?", 1_i64)
 assert relation.count.or_panic == 1_i64
 assert relation.exists?.or_panic
-assert relation.pluck(:label).or_panic == [["a"]]
-assert relation.pluck(:label, :amount).or_panic == [["a", 1_i64]]
-assert relation.pluck(:label, :label).or_panic == [["a", "a"]]
-assert relation.pick(:label).or_panic == ["a"]
+tape do
+  assert relation.pluck(:label).or_panic.to_heap == [["a"]]
+end
+tape do
+  assert relation.pluck(:label, :amount).or_panic.to_heap == [["a", 1_i64]]
+end
+tape do
+  assert relation.pluck(:label, :label).or_panic.to_heap == [["a", "a"]]
+end
+tape do
+  assert heap_row(relation.pick(:label).or_panic) == ["a"]
+end
 assert relation.ids.or_panic == [1_i64]
 empty = relation.where("amount = ?", 2_i64)
 assert empty.count.or_panic == 0_i64
 assert !empty.exists?.or_panic
-assert empty.pluck(:label).or_panic.empty?
-assert empty.pick(:label).or_panic.nil?
+tape do
+  assert empty.pluck(:label).or_panic.to_heap.empty?
+end
+tape do
+  assert empty.pick(:label).or_panic.nil?
+end
 assert empty.ids.or_panic.empty?
 assert relation.count.or_panic == 1_i64
 w6_failure("missing_col") { W6SqlThing.where("missing_col = 1").ids }
 adapter.open { |db| db.exec("INSERT INTO w6_sql_things (label, amount) VALUES (NULL, 2)") }.or_panic
-assert W6SqlThing.where("amount = ?", 2_i64).pluck(:label, :amount).or_panic == [[nil, 2_i64]]
+tape do
+  assert W6SqlThing.where("amount = ?", 2_i64).pluck(:label, :amount).or_panic.to_heap == [[nil, 2_i64]]
+end
 
 W6C04.remove("w6_sql", :primary)
 W6C04.cleanup

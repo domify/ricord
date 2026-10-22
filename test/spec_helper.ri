@@ -64,3 +64,8 @@ pub def establish_spec_connection(database : String, role : Symbol = :primary, u
   end
   nil
 end
+
+# A `pick` row copied off the tape, nil when there was none.
+pub def heap_row(row : Tape::Array(::Grant::Adapter::Driver::TapeValue) | Nil) : Array(::Grant::Adapter::Driver::Value)?
+  row.nil? ? nil : row.to_heap
+end

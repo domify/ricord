@@ -63,7 +63,9 @@ within_transaction do
     Parent.create_strict(name: "inner").or_panic
     Rollback.new
   end.or_panic
-  assert Parent.pluck(:name).or_panic.map(&.first) == ["outer"]
+  tape do
+    assert Parent.pluck(:name).or_panic.to_heap.map(&.first) == ["outer"]
+  end
 end.or_panic
 
 # it: "runs after_commit when a save's savepoint is released, as ActiveRecord test transactions

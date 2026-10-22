@@ -4,7 +4,7 @@ import std/indexable
 import grant/base::{Base}
 import grant/error::{ArgumentError}
 import grant/query/empty_clauses::{EmptyClauses}
-import test/spec_helper::{register_spec_connections}
+import test/spec_helper::{register_spec_connections, heap_row}
 
 pub class W6LookupPlain < Base
   connection {{ (env("CURRENT_ADAPTER") || "sqlite").id }}
@@ -27,7 +27,9 @@ W6LookupPlain.where(label: "x").or_where { |query| query.where(label: "y") }
 W6LookupPlain.where(label: "x").merge(W6LookupPlain.order(:id))
 W6LookupPlain.where(label: "z").unscope(:where).to_a.or_panic
 W6LookupPlain.order(:id).reorder(:label).reverse_order.to_a.or_panic
-W6LookupPlain.where(label: "q").pick(:label).or_panic
+tape do
+  heap_row(W6LookupPlain.where(label: "q").pick(:label).or_panic)
+end
 
 assert EmptyClauses.untouched?
 
@@ -46,10 +48,16 @@ W6LookupPlain.create_strict(label: "y").or_panic
 W6LookupPlain.create_strict(label: "z").or_panic
 original = W6LookupPlain.where(label: "x")
 combined = original.or_where { |query| query.where(label: "y") }
-assert combined.order(:label).pluck(:label).or_panic == [["x"], ["y"]]
-assert original.pluck(:label).or_panic == [["x"]]
+tape do
+  assert combined.order(:label).pluck(:label).or_panic.to_heap == [["x"], ["y"]]
+end
+tape do
+  assert original.pluck(:label).or_panic.to_heap == [["x"]]
+end
 mutated = original.or_where { |query| query.where_in_place(label: "z"); nil }
-assert mutated.order(:label).pluck(:label).or_panic == [["x"], ["z"]]
+tape do
+  assert mutated.order(:label).pluck(:label).or_panic.to_heap == [["x"], ["z"]]
+end
 invalid = original.or_where { |query| query.where(unknown_column: "no") }
 assert invalid.select.is_a?(::Grant::Error::ArgumentError)
 assert EmptyClauses.untouched?

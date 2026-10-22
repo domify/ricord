@@ -123,6 +123,9 @@ its imports at the root, and declares its models `pub` so Grant's macros can rea
 
 Hints: [port/HINTS.md](port/HINTS.md); port history: [doc/PORTING.md](doc/PORTING.md).
 
+Moving an app from Crystal Grant: [doc/API_CHANGES.md](doc/API_CHANGES.md) lists every user-visible
+change, why it was made and what to update.
+
 ## License
 
 MIT, same as upstream Grant. See [LICENSE](LICENSE).

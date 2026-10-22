@@ -1484,28 +1484,12 @@ pub class Builder(Model)
 
   # Grant::Query::Builder convenience methods project values without model
   # hydration. Keep positional results, including nil values and repeated
-  # fields.
-  def pluck(*fields : Symbol | String) : Array(Array(Value)) | ErrorBase
-    pluck_columns(fields.to_a.map { |field| field.to_s })
-  end
-
-  def pluck_columns(field_names : Array(String)) : Array(Array(Value)) | ErrorBase
-    return [] of Array(Value) if is_none?
-    query_assembler = prepared { |built| built }!
-    sql = query_assembler.pluck_sql(field_names)
-    assembled_error = query_assembler.error
-    return assembled_error unless assembled_error.nil?
-    ::Grant::Query::Executor::Pluck(Model).new(sql, query_assembler.numbered_parameters, field_names).run
-  end
-
-  # `pluck` with the rows on the running fiber's tape, inside a `tape` block:
-  # text columns are `Tape::String`s; `to_heap` keeps what outlives it.
-  def pluck_tape(*fields : Symbol | String) : Tape::Array(Tape::Array(TapeValue)) | ErrorBase
-    pluck_tape_columns(fields.to_a.map { |field| field.to_s })
-  end
-
-  def pluck_tape_columns(field_names : Array(String)) : Tape::Array(Tape::Array(TapeValue)) | ErrorBase
+  # fields. The rows are on the running fiber's tape, so the call runs inside
+  # a `tape` block: text columns are `Tape::String`s, and `to_heap` keeps what
+  # outlives the block (doc/API_CHANGES.md).
+  def pluck(*fields : Symbol | String) : Tape::Array(Tape::Array(TapeValue)) | ErrorBase
     return Tape::Array(Tape::Array(TapeValue)).new(0) if is_none?
+    field_names = fields.to_a.map { |field| field.to_s }
     query_assembler = prepared { |built| built }!
     sql = query_assembler.pluck_sql(field_names)
     assembled_error = query_assembler.error
@@ -1513,12 +1497,19 @@ pub class Builder(Model)
     ::Grant::Query::Executor::PluckTape(Model).new(sql, query_assembler.numbered_parameters, field_names.size).run
   end
 
-  def pick_tape(*fields : Symbol | String) : Tape::Array(TapeValue) | Nil | ErrorBase
-    chain_copy.limit_in_place(1).pluck_tape_columns(fields.to_a.map { |field| field.to_s })!.first?
+  def pick(*fields : Symbol | String) : Tape::Array(TapeValue) | Nil | ErrorBase
+    chain_copy.limit_in_place(1).pluck(*fields)!.first?
   end
 
-  def pick(*fields : Symbol | String) : Array(Value) | Nil | ErrorBase
-    chain_copy.limit_in_place(1).pluck_columns(fields.to_a.map { |field| field.to_s })!.first?
+  # Heap rows for Grant's own readers that keep them past a tape block
+  # (`ids`, batches).
+  def pluck_columns(field_names : Array(String)) : Array(Array(Value)) | ErrorBase
+    return [] of Array(Value) if is_none?
+    query_assembler = prepared { |built| built }!
+    sql = query_assembler.pluck_sql(field_names)
+    assembled_error = query_assembler.error
+    return assembled_error unless assembled_error.nil?
+    ::Grant::Query::Executor::Pluck(Model).new(sql, query_assembler.numbered_parameters, field_names).run
   end
 
   def find_by(**criteria) : Model | Nil | ErrorBase

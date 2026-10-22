@@ -104,7 +104,9 @@ assert !relation.where(label: "a").exists?.or_panic
 assert relation.sum(:score).or_panic == 26_i64
 assert relation.order(:score).first.or_panic.as(FsqRow).label == "b"
 assert relation.order(:score).limit(2).count.or_panic == 2_i64
-assert relation.pluck(:label).or_panic.flat_map { |row| row }.map(&.to_s).sorted == ["b", "c", "d"]
+tape do
+  assert relation.pluck(:label).or_panic.to_heap.flat_map { |row| row }.map(&.to_s).sorted == ["b", "c", "d"]
+end
 assert relation.group_by(:team).count.or_panic.to_s.includes?("blue")
 
 # it: supports a select list over the derived table

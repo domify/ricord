@@ -9,7 +9,7 @@ import grant/error::{ErrorBase}
 import grant/querying::{ScopedRawSqlError}
 import std/time::{Time}
 import std/enumerable::{Enumerable}
-import test/spec_helper::{register_spec_connections}
+import test/spec_helper::{register_spec_connections, heap_row}
 
 pub class EverywhereScopedRecord < Base
   connection {{ (env("CURRENT_ADAPTER") || "sqlite").id }}
@@ -112,8 +112,12 @@ assert EverywhereScopedStiChild.all.map(&.title).or_panic == ["visible child"]
 reset_records
 assert EverywhereScopedRecord.order(id: :desc).reorder(id: :asc).limit(2).offset(1).select.or_panic.map(&.title) == ["visible two", "visible three"]
 assert EverywhereScopedRecord.select(:category).select.or_panic.map(&.category).uniq.sorted_by(&.to_s) == ["alpha", "beta"]
-assert EverywhereScopedRecord.pluck(:category).or_panic.map(&.first.as(String)).uniq.sorted == ["alpha", "beta"]
-assert EverywhereScopedRecord.where(category: "alpha").pluck(:category).or_panic.uniq == [["alpha"] of Value]
+tape do
+  assert EverywhereScopedRecord.pluck(:category).or_panic.to_heap.map(&.first.as(String)).uniq.sorted == ["alpha", "beta"]
+end
+tape do
+  assert EverywhereScopedRecord.where(category: "alpha").pluck(:category).or_panic.to_heap.uniq == [["alpha"] of Value]
+end
 assert EverywhereScopedRecord.ids.or_panic.size == 3
 assert EverywhereScopedRecord.distinct.select(:category).select.or_panic.map(&.category).sorted_by(&.to_s) == ["alpha", "beta"]
 grouped_categories = EverywhereScopedRecord.group_by(:category).having("COUNT(*) > ?", 0_i64).select(:category).select.or_panic.map(&.category).sorted_by(&.to_s)
@@ -176,7 +180,9 @@ assert EverywhereScopedRecord.min(:score).or_panic == 10_i64
 assert EverywhereScopedRecord.minimum(:score).or_panic == 10_i64
 assert EverywhereScopedRecord.max(:score).or_panic == 30_i64
 assert EverywhereScopedRecord.maximum(:score).or_panic == 30_i64
-assert EverywhereScopedRecord.order(id: :asc).pick(:title).or_panic == ["visible one"] of Value
+tape do
+  assert heap_row(EverywhereScopedRecord.order(id: :asc).pick(:title).or_panic) == ["visible one"] of Value
+end
 
 # it: scopes bulk writes and leaves the hidden row unchanged
 reset_records

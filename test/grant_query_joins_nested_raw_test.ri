@@ -199,7 +199,10 @@ boss = JnEmployee.create_strict(name: "Boss").or_panic
 JnEmployee.create_strict(name: "Ann", jn_manager_id: boss.id).or_panic
 JnEmployee.create_strict(name: "Loner").or_panic
 
-rows = JnEmployee.left_outer_joins(:jn_manager, as: "managers").order(:name).pluck("jn_employees.name", "managers.name").or_panic
+rows = [] of Array(::Grant::Adapter::Driver::Value)
+tape do
+  rows = JnEmployee.left_outer_joins(:jn_manager, as: "managers").order(:name).pluck("jn_employees.name", "managers.name").or_panic.to_heap
+end
 assert rows == [["Ann", "Boss"] of Value, ["Boss", nil] of Value, ["Loner", nil] of Value]
 
 # it: rejects an alias that is not an identifier

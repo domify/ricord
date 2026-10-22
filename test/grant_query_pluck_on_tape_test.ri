@@ -1,4 +1,4 @@
-module test/grant_query_pluck_tape_test
+module test/grant_query_pluck_on_tape_test
 import grant/base::{Base}
 import std/indexable
 import test/spec_helper::{register_spec_connections}
@@ -17,11 +17,10 @@ TapePost.create_strict(title: "café", score: 3_i64).or_panic
 TapePost.create_strict(title: nil, score: 1_i64).or_panic
 TapePost.create_strict(title: "b", score: 2_i64).or_panic
 
-# pluck_tape answers the same rows as pluck, text on the tape.
-heap = TapePost.order(:score).pluck(:title, :score).or_panic
+# pluck reads its rows onto the tape: text columns are Tape::Strings.
 seen = [] of String
 tape do
-  rows = TapePost.order(:score).pluck_tape(:title, :score).or_panic
+  rows = TapePost.order(:score).pluck(:title, :score).or_panic
   assert rows.size == 3
   rows.each do |row|
     assert row.size == 2
@@ -30,17 +29,23 @@ tape do
   end
 end
 assert seen == ["nil/1", "b/2", "café/3"]
-assert heap.map { |row| row[1] } == [1_i64, 2_i64, 3_i64]
 
-# pick_tape is the first row, nil when there is none; none is empty.
+# pick is the first row, nil when there is none; none is empty.
 picked = ""
 tape do
-  row = TapePost.where(score: 3_i64).pick_tape(:title)
+  row = TapePost.where(score: 3_i64).pick(:title)
   if row.is_a?(Tape::Array(::Grant::Adapter::Driver::TapeValue))
     title = row[0]
     picked = title.to_heap if title.is_a?(Tape::String)
   end
-  assert TapePost.where(score: 99_i64).pick_tape(:title).or_panic.nil?
-  assert TapePost.none.pluck_tape(:title).or_panic.empty?
+  assert TapePost.where(score: 99_i64).pick(:title).or_panic.nil?
+  assert TapePost.none.pluck(:title).or_panic.empty?
 end
 assert picked == "café"
+
+# to_heap keeps the rows past the tape block.
+kept = [] of Array(::Grant::Adapter::Driver::Value)
+tape do
+  kept = TapePost.order(:score).pluck(:title, :score).or_panic.to_heap
+end
+assert kept == [[nil, 1_i64] of ::Grant::Adapter::Driver::Value, ["b", 2_i64] of ::Grant::Adapter::Driver::Value, ["café", 3_i64] of ::Grant::Adapter::Driver::Value]

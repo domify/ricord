@@ -52,7 +52,7 @@ pub trait CollectionRelation(Owner, Target)
     scope.group_records(*fields)
   end
 
-  def pluck(*columns : Symbol | String) : Array(Array(Value)) | ErrorBase
+  def pluck(*columns : Symbol | String) : Tape::Array(Tape::Array(::Grant::Adapter::Driver::TapeValue)) | ErrorBase
     scope.pluck(*columns)
   end
 

@@ -11,8 +11,14 @@ Grant is an ORM written for ris and its tape, not a 1:1 port of Crystal Grant: t
 cannot keep the `Grant::Base` inheritance and macro DSL shape. Design for ris and the tape
 (`@[OnTape]` rows, `Tape::Array` results, heap only where identity and writes need it). Keep the
 public API as close to Grant as the tape allows (`where`, `order`, `find`, `save`, `create`,
-`has_many`, `belongs_to`, ...) and document every divergence. `crystal-upstream/` is reference
-only; never edit it and do not compile the Crystal suite.
+`has_many`, `belongs_to`, ...). `crystal-upstream/` is reference only; never edit it and do not
+compile the Crystal suite.
+
+The user API stays the same: prefer changing what a method does inside over adding a parallel
+method (no `pluck_tape` beside `pluck`). When a user-visible change is unavoidable (a renamed or
+removed method, a new return type, a call that must now run inside `tape do`), record it in
+`doc/API_CHANGES.md` in the same commit: what changed, why, and what a Grant user updates, with a
+before/after example. Someone moving an app to ris Grant reads that file to learn what to change.
 
 SQLite and PostgreSQL are in scope. Every test runs under both `CURRENT_ADAPTER=sqlite` and
 `CURRENT_ADAPTER=pg` (PostgreSQL 17 in the `grant-pg` docker container on 127.0.0.1:5433);

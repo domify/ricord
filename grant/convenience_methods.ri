@@ -28,7 +28,7 @@ impl ConvenienceMethods(Model) for Builder(Model) forall Model
 end
 
 pub macro model_methods(model)
-  def self.pick(*fields) : Array(::Grant::Adapter::Driver::Value)? | ::Grant::Error::ErrorBase
+  def self.pick(*fields) : Tape::Array(::Grant::Adapter::Driver::TapeValue) | Nil | ::Grant::Error::ErrorBase
     current_scope.pick(*fields)
   end
 

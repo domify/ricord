@@ -117,7 +117,10 @@ clear_records
 user, _ = w6r_fixture
 values = [] of Array(Value)
 captured = statements do
-  values = user.w6r_posts.order(:score).pluck(:title, :score).or_panic
+  values = [] of Array(::Grant::Adapter::Driver::Value)
+  tape do
+    values = user.w6r_posts.order(:score).pluck(:title, :score).or_panic.to_heap
+  end
 end
 assert values.map { |row| {row[0], row[1].to_s} } == [{"b", "1"}, {"c", "2"}, {"a", "3"}, {"d", "5"}]
 selects = w6r_selects(captured)
@@ -182,7 +185,9 @@ assert user.w6r_posts.where.not(:score, 2).count.or_panic == 3
 # it: keeps the association scope when chaining
 clear_records
 user, _ = w6r_fixture
-assert user.w6r_published_posts.order(score: :desc).pluck(:title).or_panic.map(&.first) == ["d", "a", "b"]
+tape do
+  assert user.w6r_published_posts.order(score: :desc).pluck(:title).or_panic.to_heap.map(&.first) == ["d", "a", "b"]
+end
 assert user.w6r_published_posts.sum(:score).or_panic.to_s == "9"
 
 # it: works on a has_many :through collection
@@ -192,9 +197,13 @@ other_tag = W6rTag.create_strict(label: "x").or_panic
 tags = ["t1", "t2", "t3"].map { |label| W6rTag.create_strict(label: label).or_panic }
 tags.each { |tag| W6rLink.create_strict(w6r_user_id: user.id, w6r_tag_id: tag.id).or_panic }
 W6rLink.create_strict(w6r_user_id: W6rUser.create_strict(name: "n").or_panic.id, w6r_tag_id: other_tag.id).or_panic
-assert user.w6r_tags.order(label: :desc).limit(2).pluck(:label).or_panic.map(&.first) == ["t3", "t2"]
+tape do
+  assert user.w6r_tags.order(label: :desc).limit(2).pluck(:label).or_panic.to_heap.map(&.first) == ["t3", "t2"]
+end
 assert user.w6r_tags.count.or_panic == 3
-assert user.w6r_tags.pluck(:label).or_panic.size == 3
+tape do
+  assert user.w6r_tags.pluck(:label).or_panic.to_heap.size == 3
+end
 
 # it: leaves Enumerable methods on loaded records untouched
 clear_records

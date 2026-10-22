@@ -4,7 +4,7 @@ import std/indexable
 import grant/base
 import std/env
 import std/time::{Time}
-import test/spec_helper::{register_spec_connections}
+import test/spec_helper::{register_spec_connections, heap_row}
 import grant/querying::{NotFound, NotUnique}
 import grant/columns::{Type}
 register_spec_connections
@@ -32,7 +32,10 @@ ConvenienceUser.clear
 ConvenienceUser.exec("DELETE FROM convenience_users").or_panic
 ConvenienceUser.create_strict(name: "John", email: "john@example.com", age: 25).or_panic
 ConvenienceUser.create_strict(name: "Jane", email: "jane@example.com", age: 30).or_panic
-names = ConvenienceUser.order(id: :asc).pluck(:name).or_panic
+names = [] of Array(::Grant::Adapter::Driver::Value)
+tape do
+  names = ConvenienceUser.order(id: :asc).pluck(:name).or_panic.to_heap
+end
 assert names == [["John"], ["Jane"]]
 
 # it: extracts multiple column values
@@ -40,7 +43,10 @@ ConvenienceUser.clear
 ConvenienceUser.exec("DELETE FROM convenience_users").or_panic
 ConvenienceUser.create_strict(name: "John", email: "john@example.com", age: 25).or_panic
 ConvenienceUser.create_strict(name: "Jane", email: "jane@example.com", age: 30).or_panic
-data = ConvenienceUser.order(id: :asc).pluck(:name, :age).or_panic
+data = [] of Array(::Grant::Adapter::Driver::Value)
+tape do
+  data = ConvenienceUser.order(id: :asc).pluck(:name, :age).or_panic.to_heap
+end
 assert data == [["John", 25], ["Jane", 30]]
 
 # it: respects where conditions
@@ -49,7 +55,10 @@ ConvenienceUser.exec("DELETE FROM convenience_users").or_panic
 ConvenienceUser.create_strict(name: "John", email: "john@example.com", age: 25).or_panic
 ConvenienceUser.create_strict(name: "Jane", email: "jane@example.com", age: 30).or_panic
 ConvenienceUser.create_strict(name: "Jim", email: "jim@example.com", age: 35).or_panic
-names = ConvenienceUser.where(age: 30..40).order(age: :asc).pluck(:name).or_panic
+names = [] of Array(::Grant::Adapter::Driver::Value)
+tape do
+  names = ConvenienceUser.where(age: 30..40).order(age: :asc).pluck(:name).or_panic.to_heap
+end
 assert names == [["Jane"], ["Jim"]]
 
 # it: respects order
@@ -58,7 +67,10 @@ ConvenienceUser.exec("DELETE FROM convenience_users").or_panic
 ConvenienceUser.create_strict(name: "Charlie", email: "charlie@example.com", age: 35).or_panic
 ConvenienceUser.create_strict(name: "Alice", email: "alice@example.com", age: 25).or_panic
 ConvenienceUser.create_strict(name: "Bob", email: "bob@example.com", age: 30).or_panic
-names = ConvenienceUser.order(name: :asc).pluck(:name).or_panic
+names = [] of Array(::Grant::Adapter::Driver::Value)
+tape do
+  names = ConvenienceUser.order(name: :asc).pluck(:name).or_panic.to_heap
+end
 assert names == [["Alice"], ["Bob"], ["Charlie"]]
 
 # it: extracts values from the first record
@@ -66,13 +78,19 @@ ConvenienceUser.clear
 ConvenienceUser.exec("DELETE FROM convenience_users").or_panic
 ConvenienceUser.create_strict(name: "John", email: "john@example.com", age: 25).or_panic
 ConvenienceUser.create_strict(name: "Jane", email: "jane@example.com", age: 30).or_panic
-data = ConvenienceUser.order(name: :asc).pick(:name, :age).or_panic
+data = nil.as(Array(::Grant::Adapter::Driver::Value)?)
+tape do
+  data = heap_row(ConvenienceUser.order(name: :asc).pick(:name, :age).or_panic)
+end
 assert data == ["Jane", 30]
 
 # it: returns nil when no records exist
 ConvenienceUser.clear
 ConvenienceUser.exec("DELETE FROM convenience_users").or_panic
-data = ConvenienceUser.pick(:name, :age).or_panic
+data = nil.as(Array(::Grant::Adapter::Driver::Value)?)
+tape do
+  data = heap_row(ConvenienceUser.pick(:name, :age).or_panic)
+end
 assert data.nil?
 
 # it: respects where conditions
@@ -80,7 +98,10 @@ ConvenienceUser.clear
 ConvenienceUser.exec("DELETE FROM convenience_users").or_panic
 ConvenienceUser.create_strict(name: "John", email: "john@example.com", age: 25).or_panic
 ConvenienceUser.create_strict(name: "Jane", email: "jane@example.com", age: 30).or_panic
-data = ConvenienceUser.where(age: 30..30).pick(:name, :age).or_panic
+data = nil.as(Array(::Grant::Adapter::Driver::Value)?)
+tape do
+  data = heap_row(ConvenienceUser.where(age: 30..30).pick(:name, :age).or_panic)
+end
 assert data == ["Jane", 30]
 
 # it: processes records in batches

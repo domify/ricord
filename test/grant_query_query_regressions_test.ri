@@ -119,7 +119,9 @@ assert error.is_a?(ArgumentError)
 prepare_records
 record = QueryRegressionParent.create_strict(name: "before").or_panic
 relation = QueryRegressionParent.none
-assert relation.pluck(:name).or_panic.empty?
+tape do
+  assert relation.pluck(:name).or_panic.to_heap.empty?
+end
 assert relation.update_all(name: "after").or_panic == 0
 assert relation.update_all({"name" => "after"}).or_panic == 0
 assert relation.update_all({:name => "after"}).or_panic == 0
@@ -144,16 +146,22 @@ assert QueryRegressionParent.count.or_panic == 3
 prepare_records
 QueryRegressionStudent.create_strict(name: "visible").or_panic
 QueryRegressionStudent.create_strict(name: nil).or_panic
-assert QueryRegressionStudent.where(name: ["visible", nil]).order(id: :asc).pluck(:name).or_panic == [["visible"], [nil]]
+tape do
+  assert QueryRegressionStudent.where(name: ["visible", nil]).order(id: :asc).pluck(:name).or_panic.to_heap == [["visible"], [nil]]
+end
 assert QueryRegressionStudent.where(name: [] of String).select.or_panic.empty?
 assert QueryRegressionStudent.where.not_in(:name, [] of String).count.or_panic == 2
-assert QueryRegressionStudent.where.not_in(:name, ["visible", nil]).pluck(:name).or_panic.empty?
+tape do
+  assert QueryRegressionStudent.where.not_in(:name, ["visible", nil]).pluck(:name).or_panic.to_heap.empty?
+end
 
 # it: Q-5 translates inequality with nil into IS NOT NULL
 prepare_records
 QueryRegressionStudent.create_strict(name: "visible").or_panic
 null_student = QueryRegressionStudent.create_strict(name: nil).or_panic
-assert QueryRegressionStudent.where(:name, :neq, nil).pluck(:name).or_panic == [["visible"]]
+tape do
+  assert QueryRegressionStudent.where(:name, :neq, nil).pluck(:name).or_panic.to_heap == [["visible"]]
+end
 found = QueryRegressionStudent.first("WHERE name IS NULL", [] of Value).or_panic
 found_id = found.nil? ? nil : found.id
 assert found_id == null_student.id.as(Int64)
@@ -162,8 +170,12 @@ assert found_id == null_student.id.as(Int64)
 prepare_records
 records = Array.new(3) { |index| QueryRegressionParent.create_strict(name: "parent-#{index}").or_panic }
 range = records.first.id.as(Int64)...records.last.id.as(Int64)
-assert QueryRegressionParent.where(id: range).order(id: :asc).pluck(:id).or_panic == [[records[0].id.as(Int64)], [records[1].id.as(Int64)]]
-assert QueryRegressionParent.where.between(:id, range).order(id: :asc).pluck(:id).or_panic == [[records[0].id.as(Int64)], [records[1].id.as(Int64)]]
+tape do
+  assert QueryRegressionParent.where(id: range).order(id: :asc).pluck(:id).or_panic.to_heap == [[records[0].id.as(Int64)], [records[1].id.as(Int64)]]
+end
+tape do
+  assert QueryRegressionParent.where.between(:id, range).order(id: :asc).pluck(:id).or_panic.to_heap == [[records[0].id.as(Int64)], [records[1].id.as(Int64)]]
+end
 assert QueryRegressionParent.where(name: "parent-1").and_where(id: range).ids.or_panic == [records[1].id.as(Int64)]
 
 # it: Q-7 groups OR range bounds with AND
@@ -171,10 +183,13 @@ prepare_records
 records = ["inside", "inside", "inside", "inside", "outside"].map do |name|
   QueryRegressionParent.create_strict(name: name).or_panic
 end
-result = QueryRegressionParent.where(name: "outside")
-  .or_where(id: records[1].id.as(Int64)...records[3].id.as(Int64))
-  .order(id: :asc)
-  .pluck(:id).or_panic
+result = [] of Array(::Grant::Adapter::Driver::Value)
+tape do
+  result = QueryRegressionParent.where(name: "outside")
+    .or_where(id: records[1].id.as(Int64)...records[3].id.as(Int64))
+    .order(id: :asc)
+    .pluck(:id).or_panic.to_heap
+end
 assert result == [[records[1].id.as(Int64)], [records[2].id.as(Int64)], [records[4].id.as(Int64)]]
 
 # it: Q-8 expands raw bind arrays and checks placeholder counts
@@ -182,7 +197,9 @@ prepare_records
 records = Array.new(3) { |index| QueryRegressionParent.create_strict(name: "parent-#{index}").or_panic }
 lower_id = records.first.id.as(Int64)
 upper_id = records.last.id.as(Int64)
-assert QueryRegressionParent.where("id >= ? AND id <= ?", [lower_id, upper_id]).order(id: :asc).pluck(:id).or_panic == records.map { |record| [record.id.as(Int64)] }
+tape do
+  assert QueryRegressionParent.where("id >= ? AND id <= ?", [lower_id, upper_id]).order(id: :asc).pluck(:id).or_panic.to_heap == records.map { |record| [record.id.as(Int64)] }
+end
 error = QueryRegressionParent.where("id = ?", [lower_id, upper_id]).select
 assert error.is_a?(ArgumentError)
 
@@ -193,7 +210,9 @@ documented_scopes = File.read("crystal-upstream/docs/core-features/querying-and-
 assert (documented_querying + documented_scopes).includes?("$1")
 assert !(documented_querying + documented_scopes).includes?(" = $\"")
 QueryRegressionParent.create_strict(name: "bound").or_panic
-assert QueryRegressionParent.where("LOWER(name) = $1", "bound").pluck(:name).or_panic == [["bound"]]
+tape do
+  assert QueryRegressionParent.where("LOWER(name) = $1", "bound").pluck(:name).or_panic.to_heap == [["bound"]]
+end
 
 # it: Q-10 carries inner binds through IN, EXISTS, and NOT EXISTS subqueries
 prepare_records
@@ -255,7 +274,9 @@ assert item_ids == [first_item.item_id.as(String), second_item.item_id.as(String
 prepare_records
 parent = QueryRegressionParent.create_strict(name: "parent").or_panic
 QueryRegressionStudent.create_strict(name: "student").or_panic
-assert QueryRegressionParent.joins("query_regression_students", on: "query_regression_students.id = query_regression_students.id").pluck(:id).or_panic == [[parent.id.as(Int64)]]
+tape do
+  assert QueryRegressionParent.joins("query_regression_students", on: "query_regression_students.id = query_regression_students.id").pluck(:id).or_panic.to_heap == [[parent.id.as(Int64)]]
+end
 
 # it: Q-15 resolves both edges of a through association join
 prepare_records
@@ -263,4 +284,6 @@ student = QueryRegressionStudent.create_strict(name: "student").or_panic
 teacher = QueryRegressionTeacher.create_strict(name: "teacher").or_panic
 klass = QueryRegressionKlass.create_strict(name: "class", teacher_id: teacher.id).or_panic
 QueryRegressionEnrollment.create_strict(student_id: student.id, klass_id: klass.id).or_panic
-assert QueryRegressionStudent.joins(:klasses).order(id: :asc).pluck(:id).or_panic == [[student.id.as(Int64)]]
+tape do
+  assert QueryRegressionStudent.joins(:klasses).order(id: :asc).pluck(:id).or_panic.to_heap == [[student.id.as(Int64)]]
+end

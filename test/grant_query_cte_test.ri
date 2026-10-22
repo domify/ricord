@@ -102,7 +102,9 @@ assert relation.exists?.or_panic
 assert !relation.where(label: "root").exists?.or_panic
 assert relation.sum(:weight).or_panic == 12_i64
 assert relation.order(:id).first.or_panic.as(CteNode).label == "leaf"
-assert relation.order(:id).pluck(:label).or_panic.flat_map { |row| row }.map(&.to_s) == ["leaf", "right", "island"]
+tape do
+  assert relation.order(:id).pluck(:label).or_panic.to_heap.flat_map { |row| row }.map(&.to_s) == ["leaf", "right", "island"]
+end
 assert relation.distinct.count.or_panic == 3_i64
 assert relation.order(:id).limit(2).count.or_panic == 2_i64
 

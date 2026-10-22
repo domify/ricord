@@ -42,7 +42,9 @@ statements.select(&.starts_with?("SELECT")).each { |sql| assert !sql.includes?("
 removed = 0_i64
 InBatchesItem.where(:id, :lteq, ids[4]).in_batches(of: 2) { |batch| removed += batch.delete_all.or_panic }.or_panic
 assert removed == 5
-assert InBatchesItem.pluck(:id).or_panic.flat_map { |row| row } == ids.skip(5)
+tape do
+  assert InBatchesItem.pluck(:id).or_panic.to_heap.flat_map { |row| row } == ids.skip(5)
+end
 
 # it: plucks only the keys per batch and does not load records
 seed_batch_items
@@ -59,7 +61,9 @@ ids = items.map(&.id.as(Int64))
 plucked = [] of Array(Int64)
 InBatchesItem.all.in_batches(of: 3) do |batch|
   assert batch.to_a.or_panic.size <= 3
-  plucked << batch.pluck(:id).or_panic.map { |row| row.first.as(Int64) }
+  tape do
+    plucked << batch.pluck(:id).or_panic.to_heap.map { |row| row.first.as(Int64) }
+  end
 end.or_panic
 assert plucked.flat_map { |batch| batch } == ids
 counts = [] of Int64
@@ -102,7 +106,9 @@ items = seed_batch_items
 ids = items.map(&.id.as(Int64))
 seen = [] of Int64
 InBatchesItem.all.in_batches(of: 2, start: ids[1], finish: ids[5]) do |batch|
-  batch.pluck(:id).or_panic.each { |row| seen << row.first.as(Int64) }
+  tape do
+    batch.pluck(:id).or_panic.to_heap.each { |row| seen << row.first.as(Int64) }
+  end
 end.or_panic
 assert seen == ids.skip(1).first(5)
 error = InBatchesItem.order(:label).in_batches(cursor: [:id], error_on_ignore: true) { |_batch| }

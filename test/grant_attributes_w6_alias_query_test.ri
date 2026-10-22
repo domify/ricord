@@ -33,8 +33,12 @@ assert AttrPost.order(:name, :desc).select.or_panic.map(&.title) == ["b", "a"]
 
 # it: resolves the alias in pluck
 prepare_records
-assert AttrPost.order(:title).pluck(:name).or_panic == [["a"], ["b"]]
-assert AttrPost.order(:title).pluck(:name, :views).or_panic == [["a", 1], ["b", 2]]
+tape do
+  assert AttrPost.order(:title).pluck(:name).or_panic.to_heap == [["a"], ["b"]]
+end
+tape do
+  assert AttrPost.order(:title).pluck(:name, :views).or_panic.to_heap == [["a", 1], ["b", 2]]
+end
 
 # it: resolves the alias in select
 prepare_records
