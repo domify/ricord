@@ -1,41 +1,66 @@
-# One app route on a tape-backed model: the request finds a user, renders
-# its page onto the tape and sends it from there, and the request's tape frees
-# the record and the page with it.
+# Two app routes on a tape-backed model. GET reads a user onto the request's
+# tape and sends its page from there; PATCH changes it. The request's tape
+# frees the record and the page with it.
 module app
 
 import std/text
 import web/web/router::{Router}
+import web/web/context::{Context}
 import grant/grant/tape_model
 
 ::Grant::TapeModel.model User, table: "users", connection: "sqlite" do
   column id : Int64, primary: true
-  column name : String
-  column visits : Int64?
+  column name : String?
+  validates_presence name
 end
 
 # The page, written on the tape straight from the record's text.
 def user_page(user : User) : Tape::String
   page = Tape::String::Writer.new(128)
-  page << "<h1>" << user.name << "</h1><p>visits: " << (user.visits || 0_i64).to_s << "</p>"
+  page << "<h1>"
+  name = user.name
+  page << name unless name.nil?
+  page << "</h1>"
   page.finish
+end
+
+# The user the path names, or a 404 sent and nil.
+def find_user(env : Context) : User?
+  user = User.find(env.params.url["id"].to_i64).or_panic
+  return user if user.is_a?(User)
+  env.response.status_code = 404
+  env.response.send("not found".as_tape)
+  nil
 end
 
 pub def app_routes : Router
   router = Router.new
-  # The page goes from the tape straight to the socket with `send`: no heap
-  # copy. The server runs each request in a tape, so this `tape` shares it.
+
+  # Reads only. `send` writes the page from the tape straight to the socket;
+  # the server runs each request in a tape, so this `tape` shares it.
   router.get "/users/:id" do |env|
     tape do
-      user = User.find(env.params.url["id"].to_i64).or_panic
-      if user.is_a?(User)
-        user.update(visits: (user.visits || 0_i64) + 1).or_panic
-        env.response.send(user_page(user))
-      else
-        env.response.status_code = 404
-        env.response.send("not found".as_tape)
+      user = find_user(env)
+      env.response.send(user_page(user)) unless user.nil?
+    end
+    ""
+  end
+
+  # Changes the name from the form; a refused validation answers 422.
+  router.patch "/users/:id" do |env|
+    tape do
+      user = find_user(env)
+      unless user.nil?
+        if user.update(name: env.params.body["name"]? || "").or_panic
+          env.response.send(user_page(user))
+        else
+          env.response.status_code = 422
+          env.response.send(Tape::String.new(user.errors.join(", ")))
+        end
       end
     end
     ""
   end
+
   router
 end

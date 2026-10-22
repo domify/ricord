@@ -1,4 +1,4 @@
-# The route against a SQLite file; no port.
+# The routes against a SQLite file; no port.
 module app_test
 
 import std/dir::{Dir}
@@ -12,15 +12,29 @@ import app::{app_routes, User}
 path = File.join(Dir.tempdir, "tape-web-test.sqlite3")
 File.delete(path) if File.exists?(path)
 Connections.register("sqlite", Sqlite.new("sqlite", "sqlite3:" + path))
-User.adapter.open { |db| db.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL, visits BIGINT)") }.or_panic
+User.adapter.open { |db| db.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)") }.or_panic
 tape do
   User.create(name: "Ann").or_panic
 end
 
 app = RouteHandler.new(app_routes)
-first = dispatch(app, "GET", "/users/1").response
-assert first.status_code == 200
-assert first.body == "<h1>Ann</h1><p>visits: 1</p>"
-second = dispatch(app, "GET", "/users/1").response
-assert second.body == "<h1>Ann</h1><p>visits: 2</p>"
+
+# GET shows the user and changes nothing.
+shown = dispatch(app, "GET", "/users/1").response
+assert shown.status_code == 200
+assert shown.body == "<h1>Ann</h1>"
+assert dispatch(app, "GET", "/users/1").response.body == "<h1>Ann</h1>"
 assert dispatch(app, "GET", "/users/9").response.status_code == 404
+
+# PATCH changes the name; GET then shows it.
+changed = dispatch(app, form_request("PATCH", "/users/1", "name=Bea")).response
+assert changed.status_code == 200
+assert changed.body == "<h1>Bea</h1>"
+assert dispatch(app, "GET", "/users/1").response.body == "<h1>Bea</h1>"
+
+# A blank name is refused and the stored one stays.
+refused = dispatch(app, form_request("PATCH", "/users/1", "name=")).response
+assert refused.status_code == 422
+assert refused.body == "name can't be blank"
+assert dispatch(app, "GET", "/users/1").response.body == "<h1>Bea</h1>"
+assert dispatch(app, form_request("PATCH", "/users/9", "name=X")).response.status_code == 404
