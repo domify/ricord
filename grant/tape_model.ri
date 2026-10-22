@@ -1,0 +1,189 @@
+module grant/tape_model
+
+import std/indexable
+import std/tuple
+import std/named_tuple
+import grant/adapter/driver::{Value, TapeValue}
+import grant/adapter/base
+import grant/connections::{Connections}
+import grant/error::{ErrorBase}
+import grant/query/executor
+
+# PROTOTYPE: a model whose records live on the running fiber's tape, the
+# request's in a web app. `User.find(1)` reads the row straight onto the
+# tape, the view writes `user.name` (a `Tape::String`) into the response, and
+# the request's end frees it all. A record is a handle: its values sit in one
+# `Tape::Array`, which copies share, so `update` through any copy is seen by
+# all. The compiler keeps a record from outliving the tape; `to_heap` copies
+# one into a NamedTuple of heap values.
+#
+#     ::Grant::TapeModel.tape_model User, "users", "sqlite",
+#       {id: Int64, name: String?, score: Int64?}
+#
+# The first column is the primary key. Text columns read as `Tape::String`.
+pub macro tape_model(name, table, connection, columns)
+  @[OnTape]
+  pub struct {{ name }}
+    COLUMNS = [{% for key in columns.keys %}{{ key.stringify }}, {% end %}] of String
+    TABLE = {{ table }}
+    PRIMARY = {{ columns.keys.first.stringify }}
+
+    def initialize(@values : Tape::Array(::Grant::Adapter::Driver::TapeValue))
+    end
+
+    def self.adapter : ::Grant::Adapter::Base::Base
+      ::Grant::Connections::Connections[{{ connection }}]
+    end
+
+    def self.quote(name : String) : String
+      adapter.quote(name)
+    end
+
+    def self.select_sql : String
+      "SELECT " + COLUMNS.map { |column| quote(column) }.join(", ") + " FROM " + quote(TABLE)
+    end
+
+    # One row of *result_set*, its columns in COLUMNS order, onto the tape.
+    def self.load(result_set : ::Grant::Adapter::Driver::ResultSet) : {{ name }} | ::Grant::Error::ErrorBase
+      values = Tape::Array(::Grant::Adapter::Driver::TapeValue).new(COLUMNS.size)
+      COLUMNS.size.times { values << result_set.read_tape! }
+      new(values)
+    end
+
+    # The rows of *sql* as records on the tape.
+    def self.load_all(sql : String, args : Array(::Grant::Adapter::Driver::Value)) : Tape::Array({{ name }}) | ::Grant::Error::ErrorBase
+      statement = adapter.ensure_clause_template(sql)
+      ::Grant::Query::Executor.open_statement(adapter, statement, args) do |db|
+        db.query(statement, args) do |result_set|
+          records = Tape::Array({{ name }}).new
+          result_set.each do
+            records << load(result_set)!
+            nil
+          end!
+          records
+        end
+      end
+    end
+
+    def self.find(id : Int64) : {{ name }} | Nil | ::Grant::Error::ErrorBase
+      args = [id] of ::Grant::Adapter::Driver::Value
+      load_all(select_sql + " WHERE " + quote(PRIMARY) + " = ? LIMIT 1", args)!.first?
+    end
+
+    def self.where(**criteria) : Query
+      Query.new.where(**criteria)
+    end
+
+    def self.order(column : Symbol, direction : Symbol = :asc) : Query
+      Query.new.order(column, direction)
+    end
+
+    def self.create(**attributes) : {{ name }} | ::Grant::Error::ErrorBase
+      names = [] of String
+      args = [] of ::Grant::Adapter::Driver::Value
+      attributes.each do |key, value|
+        names << quote(key.to_s)
+        args << value
+      end
+      placeholders = names.map { "?" }.join(", ")
+      sql = adapter.ensure_clause_template("INSERT INTO " + quote(TABLE) + " (" + names.join(", ") + ") VALUES (" + placeholders + ")")
+      mutation = ::Grant::Query::Executor.open_statement(adapter, sql, args) { |db| db.insert(sql, args, PRIMARY) }!
+      found = find(mutation.last_insert_id)!
+      return ::Grant::Error::ErrorBase.new("created row was not found") if found.nil?
+      found
+    end
+
+    {% index = 0 %}
+    {% for key, type in columns %}
+      {% text = type.stringify.includes?("String") %}
+      {% nilable = type.stringify.ends_with?("?") || type.stringify.includes?("Nil") %}
+      {% plain = type.stringify.gsub(/\?$/, "").gsub(/ \| ::Nil| \| Nil/, "").id %}
+      def {{ key.id }} : {% if text %}Tape::String{% else %}{{ plain }}{% end %}{% if nilable %}?{% end %}
+        value = @values[{{ index }}]
+        {% if nilable %}
+          value.is_a?({% if text %}Tape::String{% else %}{{ plain }}{% end %}) ? value : nil
+        {% else %}
+          value.as({% if text %}Tape::String{% else %}{{ plain }}{% end %})
+        {% end %}
+      end
+      {% index += 1 %}
+    {% end %}
+
+    # Writes *attributes* to the row and to this record, which every copy of
+    # it sees. Heap text is copied onto the tape.
+    def update(**attributes) : Nil | ::Grant::Error::ErrorBase
+      sets = [] of String
+      args = [] of ::Grant::Adapter::Driver::Value
+      attributes.each do |key, value|
+        sets << {{ name }}.quote(key.to_s) + " = ?"
+        args << value
+      end
+      args << {{ columns.keys.first.id }}
+      adapter = {{ name }}.adapter
+      sql = adapter.ensure_clause_template("UPDATE " + {{ name }}.quote(TABLE) + " SET " + sets.join(", ") + " WHERE " + {{ name }}.quote(PRIMARY) + " = ?")
+      ::Grant::Query::Executor.open_statement(adapter, sql, args) { |db| db.execute(sql, args) }!
+      attributes.each do |key, value|
+        index = COLUMNS.index(key.to_s)
+        next if index.nil?
+        @values[index] = value.is_a?(String) ? Tape::String.new(value) : value
+      end
+      nil
+    end
+
+    # The record's values copied to the heap, to keep past the tape.
+    def to_heap
+      {
+        {% for key, type in columns %}
+          {% if type.stringify.includes?("String") %}
+            {{ key.id }}: (%text = {{ key.id }}).nil? ? nil : %text.to_heap,
+          {% else %}
+            {{ key.id }}: {{ key.id }},
+          {% end %}
+        {% end %}
+      }
+    end
+
+    # A relation on the heap: conditions and order only, never records.
+    class Query
+      @conditions = [] of String
+      @args = [] of ::Grant::Adapter::Driver::Value
+      @order = ""
+
+      def where(**criteria) : Query
+        criteria.each do |key, value|
+          column = {{ name }}.quote(key.to_s)
+          if value.nil?
+            @conditions << column + " IS NULL"
+          else
+            @conditions << column + " = ?"
+            @args << value
+          end
+        end
+        self
+      end
+
+      def order(column : Symbol, direction : Symbol = :asc) : Query
+        @order = " ORDER BY " + {{ name }}.quote(column.to_s) + (direction == :desc ? " DESC" : " ASC")
+        self
+      end
+
+      def to_sql : String
+        where_sql = @conditions.empty? ? "" : " WHERE " + @conditions.join(" AND ")
+        {{ name }}.select_sql + where_sql + @order
+      end
+
+      def to_a : Tape::Array({{ name }}) | ::Grant::Error::ErrorBase
+        {{ name }}.load_all(to_sql, @args)
+      end
+
+      def each(&block : {{ name }} -> Nil) : Nil | ::Grant::Error::ErrorBase
+        to_a!.each { |record| yield record }
+        nil
+      end
+
+      def first : {{ name }} | Nil | ::Grant::Error::ErrorBase
+        to_a!.first?
+      end
+    end
+  end
+end

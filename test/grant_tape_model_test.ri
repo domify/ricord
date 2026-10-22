@@ -1,0 +1,65 @@
+module test/grant_tape_model_test
+import std/indexable
+import std/env::{ENV}
+import grant/tape_model
+import test/spec_helper::{register_spec_connections}
+
+::Grant::TapeModel.tape_model TapeUser, "tape_users", {{ env("CURRENT_ADAPTER") || "sqlite" }},
+  {id: Int64, name: String?, score: Int64?}
+
+register_spec_connections
+adapter = TapeUser.adapter
+key = (ENV["CURRENT_ADAPTER"]? || "sqlite") == "pg" ? "BIGSERIAL PRIMARY KEY" : "INTEGER PRIMARY KEY"
+adapter.open do |db|
+  db.execute("DROP TABLE IF EXISTS tape_users").or_panic
+  db.execute("CREATE TABLE tape_users (id #{key}, name TEXT, score BIGINT)").or_panic
+end.or_panic
+
+# A view: the record's text goes straight into the page on the tape.
+def user_page(user : TapeUser) : Tape::String
+  page = Tape::String::Writer.new(64)
+  page << "<h1>"
+  name = user.name
+  page << name unless name.nil?
+  page << "</h1><p>" << user.score.to_s << "</p>"
+  page.finish
+end
+
+html = ""
+kept = {id: 0_i64, name: nil.as(String?), score: nil.as(Int64?)}
+names = [] of String
+
+# One request: find, render, update, query, all on the request's tape.
+tape do
+  created = TapeUser.create(name: "Ann", score: 3_i64).or_panic
+  TapeUser.create(name: "Bob", score: 9_i64).or_panic
+  TapeUser.create(name: nil, score: 9_i64).or_panic
+
+  user = TapeUser.find(created.id).or_panic
+  if user.is_a?(TapeUser)
+    name = user.name
+    assert name.is_a?(Tape::String) && name == "Ann"
+    assert user.score == 3_i64
+    html = user_page(user).to_heap
+
+    # A copy is the same record: an update through it is seen by both.
+    same = user
+    same.update(name: "Bea", score: 9_i64).or_panic
+    assert user.name == "Bea"
+    assert user.score == 9_i64
+    assert TapeUser.find(user.id).or_panic.is_a?(TapeUser)
+    kept = user.to_heap
+  end
+
+  TapeUser.where(score: 9_i64).order(:id).each do |record|
+    text = record.name
+    names << (text.nil? ? "NULL" : text.to_heap)
+  end.or_panic
+  assert TapeUser.where(score: 1_i64).first.or_panic.nil?
+  assert TapeUser.find(999_i64).or_panic.nil?
+end
+
+assert html == "<h1>Ann</h1><p>3</p>"
+assert names == ["Bea", "Bob", "NULL"]
+assert kept[:name] == "Bea"
+assert kept[:score] == 9_i64
