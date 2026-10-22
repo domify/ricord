@@ -1,0 +1,26 @@
+# The route against a SQLite file; no port.
+module app_test
+
+import std/dir::{Dir}
+import std/file::{File}
+import web/web/router::{RouteHandler}
+import web/web/harness::*
+import grant/grant/connections::{Connections}
+import grant/grant/adapter/sqlite::{Sqlite}
+import app::{app_routes, User}
+
+path = File.join(Dir.tempdir, "tape-web-test.sqlite3")
+File.delete(path) if File.exists?(path)
+Connections.register("sqlite", Sqlite.new("sqlite", "sqlite3:" + path))
+User.adapter.open { |db| db.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL, visits BIGINT)") }.or_panic
+tape do
+  User.create(name: "Ann").or_panic
+end
+
+app = RouteHandler.new(app_routes)
+first = dispatch(app, "GET", "/users/1").response
+assert first.status_code == 200
+assert first.body == "<h1>Ann</h1><p>visits: 1</p>"
+second = dispatch(app, "GET", "/users/1").response
+assert second.body == "<h1>Ann</h1><p>visits: 2</p>"
+assert dispatch(app, "GET", "/users/9").response.status_code == 404

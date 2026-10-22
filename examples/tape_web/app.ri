@@ -1,0 +1,39 @@
+# One app route on a tape-backed model: the request finds a user, renders
+# its page and answers, and the request's tape frees the record with it.
+module app
+
+import std/text
+import web/web/router::{Router}
+import grant/grant/tape_model
+
+::Grant::TapeModel.model User, table: "users", connection: "sqlite" do
+  column id : Int64, primary: true
+  column name : String
+  column visits : Int64?
+end
+
+# The page, written on the tape straight from the record's text.
+def user_page(user : User) : Tape::String
+  page = Tape::String::Writer.new(128)
+  page << "<h1>" << user.name << "</h1><p>visits: " << (user.visits || 0_i64).to_s << "</p>"
+  page.finish
+end
+
+pub def app_routes : Router
+  router = Router.new
+  router.get "/users/:id" do |env|
+    html = ""
+    tape do
+      user = User.find(env.params.url["id"].to_i64).or_panic
+      if user.is_a?(User)
+        user.update(visits: (user.visits || 0_i64) + 1).or_panic
+        html = user_page(user).to_heap
+      else
+        env.response.status_code = 404
+        html = "not found"
+      end
+    end
+    html
+  end
+  router
+end
