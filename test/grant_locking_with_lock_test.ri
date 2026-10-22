@@ -1,4 +1,5 @@
 module test/grant_locking_with_lock_test
+import std/indexable
 import grant/base::{Base}
 import grant/locking::{LockMode}
 import grant/errors::{RecordNotFound, TransactionIsolationError, Rollback}

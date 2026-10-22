@@ -1,5 +1,7 @@
 module test/grant_query_extract_associated_test
 
+import std/tuple
+import std/indexable
 import grant/base::{Base}
 import grant/query/extract_associated
 import grant/error::{ArgumentError}

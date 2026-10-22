@@ -1,4 +1,5 @@
 module test/grant_querying_from_rs_test
+import std/float
 import grant/base::{Base}
 import grant/adapter/driver::{Value}
 import test/querying_spec_models::{Review}

@@ -1,5 +1,7 @@
 module test/grant_schema_create_table_test
 
+import grant/schema/introspection
+import std/tuple
 import grant/schema/schema_statements::{RecordingStatements, AdapterStatements}
 import grant/schema/table_definition::{TableDefinition}
 import grant/adapter/schema::{Dialect, InvalidDefinition, UnsupportedOperation}

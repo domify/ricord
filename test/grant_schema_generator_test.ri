@@ -1,4 +1,5 @@
 module test/grant_schema_generator_test
+import std/indexable
 import grant/schema/generator::{Generator, GeneratorError}
 import grant/schema/migration::{Migration}
 import grant/schema/migration_context::{MigrationContext}

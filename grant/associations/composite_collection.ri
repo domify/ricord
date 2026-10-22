@@ -1,5 +1,6 @@
 module grant/associations/composite_collection
 
+import std/named_tuple
 import grant/query/builder::{Builder}
 import grant/eager_loading::{StrictLoadingViolationError}
 import grant/columns

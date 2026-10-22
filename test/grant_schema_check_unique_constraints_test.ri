@@ -1,4 +1,6 @@
 module test/grant_schema_check_unique_constraints_test
+import grant/schema/introspection
+import std/tuple
 import grant/schema/schema_statements::{RecordingStatements, AdapterStatements}
 import grant/adapter/schema::{Dialect, UnsupportedOperation}
 import grant/schema/constraint_catalog::{CheckConstraintInfo}

@@ -1,4 +1,5 @@
 module test/grant_perf_w6_primary_key_lookup_keys_test
+import std/indexable
 import grant/base::{Base}
 import grant/errors::{RecordNotFound}
 import test/spec_helper::{CURRENT_ADAPTER, register_spec_connections}

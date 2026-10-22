@@ -1,4 +1,5 @@
 module test/grant_errors_errors_api_test
+import std/indexable
 import grant/base::{Base}
 import grant/errors::{Errors}
 import grant/error::{Error, ConversionError}

@@ -1,4 +1,6 @@
 module test/grant_schema_w6b_execute_schema_qualified_test
+import std/tuple
+import grant/schema/introspection
 import grant/schema/migration::{Migration}
 import grant/schema/migration_context::{MigrationContext}
 import grant/error::{ErrorBase}

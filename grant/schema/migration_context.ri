@@ -1,5 +1,6 @@
 module grant/schema/migration_context
 
+import std/tuple
 import grant/schema/migration::{Migration, MigrationEntry, InvalidMigration, SqlFileMigration}
 import grant/schema/internal_metadata::{InternalMetadata, ProtectedEnvironmentError}
 import grant/schema/schema_migration::{SchemaMigration, Tracking}

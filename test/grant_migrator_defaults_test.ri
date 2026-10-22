@@ -1,4 +1,5 @@
 module test/grant_migrator_defaults_test
+import std/indexable
 import grant/base
 import test/spec_helper
 

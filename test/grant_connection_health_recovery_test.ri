@@ -38,11 +38,7 @@ end
 
 pub def fiber_count : Int32
   count = 0
-  fiber = IyiScheduler.first_fiber
-  while fiber
-    count += 1
-    fiber = fiber.next_fiber
-  end
+  IyiScheduler.each_fiber { |fiber| count += 1 }
   count
 end
 

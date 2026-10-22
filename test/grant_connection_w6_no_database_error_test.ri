@@ -1,5 +1,6 @@
 module test/grant_connection_w6_no_database_error_test
 
+import std/indexable
 import grant/base::{Base}
 import grant/adapter/base
 import grant/adapter/sqlite::{Sqlite}

@@ -1,4 +1,5 @@
 module test/grant_connection_with_connection_test
+import std/indexable
 import grant/base::{Base}
 import test/pool_spec_support::{C02Support}
 import test/w6_c04_support::{W6C04}

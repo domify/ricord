@@ -1,5 +1,7 @@
 module grant/association_collection
 
+import std/named_tuple
+import std/indexable
 import grant/query/builder::{Builder}
 import grant/query/bind_value
 import grant/associations/collection_finders::{CollectionFinders}

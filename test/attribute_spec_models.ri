@@ -1,4 +1,7 @@
 module test/attribute_spec_models
+import std/tuple
+import std/named_tuple
+import std/indexable
 import grant/base::{Base}
 import grant/converters
 pub enum Level

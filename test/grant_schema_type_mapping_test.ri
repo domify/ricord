@@ -1,4 +1,6 @@
 module test/grant_schema_type_mapping_test
+import std/tuple
+import std/indexable
 import grant/base::{Base}
 import grant/schema/schema_statements::{RecordingStatements, AdapterStatements}
 import grant/schema/table_definition::{TableDefinition}

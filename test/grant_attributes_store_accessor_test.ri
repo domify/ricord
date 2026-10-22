@@ -1,4 +1,5 @@
 module test/grant_attributes_store_accessor_test
+import std/indexable
 import grant
 import grant/base::{Base}
 import std/json::{JSON, Any, PullParser, Builder, ToJSON}

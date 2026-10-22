@@ -1,4 +1,5 @@
 module test/grant_associations_has_many_test
+import std/indexable
 import std/random::{Random}
 import grant/base::{Base}
 import grant/querying::{NotFound}

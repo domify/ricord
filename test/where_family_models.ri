@@ -1,5 +1,6 @@
 module test/where_family_models
 
+import std/named_tuple
 import grant/base::{Base}
 pub import grant/polymorphic
 import std/time::{Time}

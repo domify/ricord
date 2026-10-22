@@ -1,4 +1,6 @@
 module test/grant_query_where_nested_hash_test
+import std/named_tuple
+import std/indexable
 import grant/base::{Base}
 import grant/polymorphic
 import grant/query/builder::{Builder}

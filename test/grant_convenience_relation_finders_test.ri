@@ -1,4 +1,5 @@
 module test/grant_convenience_relation_finders_test
+import std/named_tuple
 import test/convenience_models::{ConvItem, reset_items, statements}
 import grant/querying::{NotFound, NotUnique}
 import grant/adapter/driver::{Value}

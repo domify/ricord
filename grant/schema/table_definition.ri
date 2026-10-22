@@ -1,4 +1,5 @@
 module grant/schema/table_definition
+import std/tuple
 import grant/adapter/schema::{Dialect, UnsupportedOperation, InvalidDefinition, TypeCatalog}
 import grant/schema/index_definition::{IndexDefinition}
 import grant/errors::{ErrorBase}

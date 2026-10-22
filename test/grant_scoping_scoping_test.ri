@@ -1,4 +1,5 @@
 module test/grant_scoping_scoping_test
+import std/indexable
 import std/time::{Time}
 import grant/base::{Base}
 import grant/query/builder::{Builder}

@@ -1,4 +1,5 @@
 module test/grant_locking_lock_clause_test
+import std/indexable
 import grant/base::{Base}
 import grant/locking::{LockMode}
 import grant/locking/clause::{Clause, clause}

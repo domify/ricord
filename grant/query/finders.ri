@@ -1,5 +1,7 @@
 module grant/query/finders
 
+import std/tuple
+import std/named_tuple
 import grant/columns::{Type}
 import grant/errors::{RecordNotSaved}
 import grant/error_taxonomy::{RecordNotUnique}

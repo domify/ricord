@@ -7,6 +7,7 @@ module test/w6_c04_support
 # named `grant_w6_c04_<name>`. Rows are written and read through plain driver
 # connections, so what a Grant query returns names the database it actually
 # reached.
+import std/indexable
 import std/text
 import std/dir::{Dir}
 import std/file::{File}

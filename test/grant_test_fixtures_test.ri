@@ -1,5 +1,6 @@
 module test/grant_test_fixtures_test
 
+import std/indexable
 import grant/base::{Base}
 import grant/test_fixtures
 import grant/test_fixtures::{identify, identify_uuid, load}

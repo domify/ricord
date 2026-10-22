@@ -1,5 +1,8 @@
 module test/transaction_crud_models
 pub import grant/base
+import std/tuple
+import std/named_tuple
+import std/indexable
 import grant/base::{Base}
 import std/io::{Memory}
 

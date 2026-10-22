@@ -1,4 +1,5 @@
 module test/dirty_family_models
+import std/indexable
 import grant/base::{Base}
 import std/env
 import std/json::{serializable}

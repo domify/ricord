@@ -1,5 +1,7 @@
 module test/grant_schema_composite_pk_create_test
 
+import std/tuple
+import std/indexable
 import grant/base::{Base}
 import grant/composite_primary_key::{composite_primary_key}
 import grant/schema/schema_statements::{RecordingStatements, AdapterStatements}

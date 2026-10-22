@@ -1,4 +1,5 @@
 module test/grant_schema_reversible_test
+import std/tuple
 import grant/schema/migration::{Migration, InvalidMigration}
 import grant/schema/command_recorder::{CommandRecorder, IrreversibleMigration}
 import grant/schema/schema_statements::{RecordingStatements}

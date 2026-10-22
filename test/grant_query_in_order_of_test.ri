@@ -1,5 +1,6 @@
 module test/grant_query_in_order_of_test
 
+import std/indexable
 import grant/base::{Base}
 import grant/query/ordering::{OrderSupport}
 import grant/error::{ArgumentError}

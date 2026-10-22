@@ -1,5 +1,6 @@
 module test/grant_query_where_range_test
 
+import std/indexable
 import std/time::{Time}
 import grant/base::{Base}
 import grant/query/builder::{Builder}

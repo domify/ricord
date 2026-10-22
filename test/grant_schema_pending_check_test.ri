@@ -1,4 +1,5 @@
 module test/grant_schema_pending_check_test
+import std/tuple
 import grant/schema/migration_context::{MigrationContext, PendingMigrationError, check_pending_strict, maintain_test_schema_strict}
 import grant/events::{SQL}
 import grant/notifications

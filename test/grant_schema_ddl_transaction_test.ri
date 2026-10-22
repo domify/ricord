@@ -1,5 +1,7 @@
 module test/grant_schema_ddl_transaction_test
 
+import grant/schema/introspection
+import std/tuple
 import grant/schema/migration::{Migration, MigrationEntry}
 import grant/schema/migration_context::{MigrationContext}
 import grant/adapter/schema::{InvalidDefinition}

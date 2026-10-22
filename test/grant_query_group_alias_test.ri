@@ -1,5 +1,6 @@
 module test/grant_query_group_alias_test
 
+import std/indexable
 import grant/base::{Base}
 import grant/adapter/driver::{Value}
 import grant/error::{ArgumentError}

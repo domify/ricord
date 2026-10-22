@@ -4,6 +4,8 @@ pub import grant/collection
 pub import grant/query/where_chain
 pub import grant/replica_load_balancer
 
+import std/int
+import std/indexable
 import db/db/value
 import std/named_tuple
 pub import std/time
@@ -219,7 +221,19 @@ pub abstract class Base
     end
 
     def self.apply_default_scope(query : ::Grant::Query::Builder::Builder(Model)) forall Model
-      query.{{block.body}}
+      # ris wraps the block's call in a scope mark (`mark; tmp = call; reset;
+      # tmp`): send the receiverless call to the query, keep the rest.
+      {% if block.body.is_a?(Expressions) %}
+        {% for expression in block.body.expressions %}
+          {% if expression.is_a?(Assign) && expression.value.is_a?(Call) && expression.value.receiver.is_a?(Nop) && !expression.value.name.starts_with?("__iyi") %}
+            {{ expression.target }} = query.{{ expression.value }}
+          {% else %}
+            {{ expression }}
+          {% end %}
+        {% end %}
+      {% else %}
+        query.{{ block.body }}
+      {% end %}
     end
   end
 
@@ -1647,6 +1661,14 @@ pub abstract class Base
 
     def self.pluck(*fields : Symbol | String) : Array(Array(::Grant::Adapter::Driver::Value)) | ::Grant::Error::ErrorBase
       current_scope.pluck_columns(fields.to_a.map { |field| field.to_s })
+    end
+
+    def self.pluck_tape(*fields : Symbol | String) : Tape::Array(Tape::Array(::Grant::Adapter::Driver::TapeValue)) | ::Grant::Error::ErrorBase
+      current_scope.pluck_tape_columns(fields.to_a.map { |field| field.to_s })
+    end
+
+    def self.pick_tape(*fields : Symbol | String) : Tape::Array(::Grant::Adapter::Driver::TapeValue) | Nil | ::Grant::Error::ErrorBase
+      current_scope.pick_tape(*fields)
     end
 
     def self.ids : Array(::Grant::Adapter::Driver::Value) | ::Grant::Error::ErrorBase

@@ -1,5 +1,6 @@
 module test/grant_schema_model_indexes_test
 
+import std/indexable
 import grant/base::{Base}
 import grant/schema/introspection
 import grant/error::{ErrorBase}

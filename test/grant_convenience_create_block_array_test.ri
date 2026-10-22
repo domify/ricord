@@ -1,4 +1,6 @@
 module test/grant_convenience_create_block_array_test
+import std/int
+import std/indexable
 import grant/base::{Base}
 import grant/errors::{RecordInvalid, RecordNotSaved}
 import test/spec_helper::{CURRENT_ADAPTER, register_spec_connections}

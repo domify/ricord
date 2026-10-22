@@ -1,5 +1,6 @@
 module grant/validators/numericality
 
+import std/float
 import grant/validator_info
 import std/text
 

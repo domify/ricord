@@ -1,4 +1,5 @@
 module grant/schema/alter_table
+import std/tuple
 import grant/adapter/schema::{Dialect, UnsupportedOperation, InvalidDefinition}
 import grant/schema/column_info::{ColumnInfo, IndexInfo}
 import grant/schema/constraint_definition::{ForeignKeyDefinition, CheckConstraintDefinition, UniqueConstraintDefinition, ExclusionConstraintDefinition}

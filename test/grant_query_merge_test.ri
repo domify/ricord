@@ -1,5 +1,6 @@
 module test/grant_query_merge_test
 
+import std/indexable
 import grant/query/builder::{Builder}
 import test/where_family_models::{wf_create_tables, wf_clear_tables}
 import test/spec_helper::{register_spec_connections}

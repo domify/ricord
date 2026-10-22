@@ -1,4 +1,5 @@
 module test/grant_scoping_named_scope_chaining_test
+import std/indexable
 import std/env
 import std/time::{Time}
 import grant/base::{Base}

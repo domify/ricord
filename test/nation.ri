@@ -1,5 +1,6 @@
 module test/nation
 pub import grant/base
+import std/indexable
 import grant/base::{Base}
 
 pub class County < Base

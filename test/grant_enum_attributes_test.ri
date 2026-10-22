@@ -1,5 +1,6 @@
 module test/grant_enum_attributes_test
 
+import std/indexable
 import grant/base::{Base}
 import test/spec_helper::{CURRENT_ADAPTER, register_spec_connections}
 import std/enum

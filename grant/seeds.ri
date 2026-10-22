@@ -1,4 +1,5 @@
 module grant/seeds
+import std/indexable
 import std/text
 import std/file::{File}
 import grant/adapter/base::{Base}

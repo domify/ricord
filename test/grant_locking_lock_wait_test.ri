@@ -1,4 +1,5 @@
 module test/grant_locking_lock_wait_test
+import std/indexable
 import grant/base::{Base}
 import grant/locking::{LockMode, LockWaitTimeoutError}
 import grant/error_taxonomy::{LockWaitTimeout}

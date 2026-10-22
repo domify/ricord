@@ -1,5 +1,6 @@
 module test/grant_errors_statement_invalid_test
 
+import std/indexable
 import grant/base::{Base}
 import grant/error::{ErrorBase}
 import grant/error_taxonomy::{StatementInvalid}

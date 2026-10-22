@@ -1,4 +1,5 @@
 module test/grant_attribute_api_test
+import std/indexable
 import grant
 import grant/base::{Base}
 import grant/attribute_api::{TypeCasters}

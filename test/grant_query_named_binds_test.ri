@@ -1,5 +1,6 @@
 module test/grant_query_named_binds_test
 
+import std/indexable
 import grant/base::{Base}
 import grant/query/builder::{Builder}
 import grant/sanitization::{rewrite_named_binds, sanitize_sql_array}

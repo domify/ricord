@@ -1,4 +1,5 @@
 module test/grant_persistence_helpers_operations_test
+import std/indexable
 import grant/base
 import std/env
 import std/text

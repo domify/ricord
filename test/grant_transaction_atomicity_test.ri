@@ -1,4 +1,5 @@
 module test/grant_transaction_atomicity_test
+import std/indexable
 import grant/base::{Base}
 import grant/adapter/sqlite::{Connection}
 import grant/errors::{Rollback, ErrorBase}

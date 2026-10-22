@@ -1,4 +1,5 @@
 module test/grant_validations_multi_attribute_test
+import std/indexable
 import std/regex::{Regex}
 import grant/base::{Base}
 import test/spec_helper::{register_spec_connections}

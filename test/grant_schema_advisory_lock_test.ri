@@ -1,5 +1,6 @@
 module test/grant_schema_advisory_lock_test
 
+import std/tuple
 import grant
 import grant/advisory_lock::{AdvisoryLockTimeout, LockFile}
 import grant/adapter/pg::{Pg}

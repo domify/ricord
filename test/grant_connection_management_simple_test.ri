@@ -1,4 +1,5 @@
 module test/grant_connection_management_simple_test
+import std/indexable
 import grant/base::{Base}
 import grant/adapter/base
 import test/spec_helper::{register_spec_connections}

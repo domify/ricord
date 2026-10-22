@@ -1,4 +1,5 @@
 module test/grant_attributes_introspection_test
+import std/tuple
 import test/attribute_spec_models::{AttrPost, Level}
 import test/spec_helper::{register_spec_connections}
 import grant/attributes::{UnknownAttributeError}

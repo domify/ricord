@@ -1,4 +1,5 @@
 module test/grant_callbacks_proc_conditions_test
+import std/indexable
 import grant/base::{Base}
 import test/spec_helper::{register_spec_connections}
 # Proc/lambda if:/unless: conditions on lifecycle callbacks (not just Symbols).

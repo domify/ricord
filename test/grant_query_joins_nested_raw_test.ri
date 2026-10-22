@@ -1,4 +1,5 @@
 module test/grant_query_joins_nested_raw_test
+import std/indexable
 import grant/base::{Base}
 import grant/error::{ArgumentError}
 import grant/adapter/driver::{Value}

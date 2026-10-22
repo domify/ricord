@@ -1,4 +1,5 @@
 module test/grant_query_from_subquery_test
+import std/indexable
 import grant/base::{Base}
 import grant/query/builder::{Builder}
 import grant/error::{ArgumentError}

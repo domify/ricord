@@ -1,4 +1,5 @@
 module test/grant_query_find_each_test
+import std/indexable
 import grant/base::{Base}
 import grant/error::{ArgumentError}
 import grant/query/batches::{BatchOptionIgnoredError}

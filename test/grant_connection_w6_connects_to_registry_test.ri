@@ -1,5 +1,7 @@
 module test/grant_connection_w6_connects_to_registry_test
 
+import std/tuple
+import std/indexable
 import grant/base::{Base}
 import grant/connection_registry::{ConnectionRegistry}
 import grant/connection_handling::{ConnectionHandling, UnestablishedConnectionError}

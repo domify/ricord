@@ -1,4 +1,5 @@
 module test/grant_perf_w6_primary_key_lookup_test
+import std/indexable
 import grant/base::{Base}
 import grant/query_cache
 import grant/query_logs

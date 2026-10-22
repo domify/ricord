@@ -1,4 +1,5 @@
 module test/grant_encryption_migration_helpers_test
+import std/indexable
 import grant/base::{Base}
 import grant/encryption
 import grant/encryption/migration_helpers

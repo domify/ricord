@@ -1,4 +1,6 @@
 module test/grant_persistence_touch_options_test
+import std/tuple
+import std/indexable
 import grant/base::{Base}
 import grant/error::{ArgumentError}
 import std/time::{Time, Span}

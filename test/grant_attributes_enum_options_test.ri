@@ -1,5 +1,6 @@
 module test/grant_attributes_enum_options_test
 
+import std/indexable
 import grant/base::{Base}
 import grant/enum_attributes::{UnknownEnumValueError}
 import grant/errors::{RecordInvalid}

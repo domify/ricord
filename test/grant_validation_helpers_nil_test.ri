@@ -1,4 +1,6 @@
 module test/grant_validation_helpers_nil_test
+import std/float
+import std/indexable
 import grant/base::{Base}
 import test/spec_helper::{register_spec_connections}
 

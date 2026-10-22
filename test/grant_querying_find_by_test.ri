@@ -1,4 +1,5 @@
 module test/grant_querying_find_by_test
+import std/named_tuple
 import std/regex::{Regex}
 import test/transaction_crud_models::{Parent, ReservedWord}
 import test/querying_spec_models::{Review, Student}

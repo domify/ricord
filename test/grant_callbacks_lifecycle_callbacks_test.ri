@@ -1,4 +1,6 @@
 module test/grant_callbacks_lifecycle_callbacks_test
+import std/tuple
+import std/indexable
 import grant/base::{Base}
 import test/spec_helper::{CURRENT_ADAPTER, register_spec_connections}
 

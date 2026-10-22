@@ -1,4 +1,5 @@
 module test/grant_table_table_test
+import std/indexable
 import grant/base::{Base}
 import test/table_namespace_model
 

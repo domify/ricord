@@ -1,5 +1,6 @@
 module test/grant_spec_support_transactional_wrapper_test
 
+import std/tuple
 import grant/spec
 import grant/spec_support/transactional::{within_transaction}
 import grant/connections::{Connections}

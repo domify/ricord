@@ -1,4 +1,5 @@
 module test/grant_schema_references_join_table_test
+import std/tuple
 import grant/schema/schema_statements::{RecordingStatements, AdapterStatements}
 import grant/adapter/schema::{Dialect}
 import grant/schema/column_info::{ColumnInfo, ReferentialAction}

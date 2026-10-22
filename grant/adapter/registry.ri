@@ -1,4 +1,5 @@
 module grant/adapter/registry
+import std/tuple
 import std/text
 import std/regex
 import grant/adapter/base::{Base}

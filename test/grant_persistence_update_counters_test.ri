@@ -1,4 +1,6 @@
 module test/grant_persistence_update_counters_test
+import std/tuple
+import std/indexable
 import grant/base::{Base}
 import std/time::{Time}
 import grant/error::{ArgumentError}

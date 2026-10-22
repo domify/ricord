@@ -4,7 +4,8 @@ import grant/columns
 
 import std/text
 pub import grant/adapter/driver
-import grant/adapter/driver::{Value, Mutation}
+import grant/adapter/driver::{Value, Mutation, TapeValue}
+import std/tuple
 import grant/errors::{DatabaseError, RecordNotFound, ErrorBase}
 import grant/error::{ArgumentError}
 import grant/locking::{LockMode}
@@ -1495,6 +1496,25 @@ pub class Builder(Model)
     assembled_error = query_assembler.error
     return assembled_error unless assembled_error.nil?
     ::Grant::Query::Executor::Pluck(Model).new(sql, query_assembler.numbered_parameters, field_names).run
+  end
+
+  # `pluck` with the rows on the running fiber's tape, inside a `tape` block:
+  # text columns are `Tape::String`s; `to_heap` keeps what outlives it.
+  def pluck_tape(*fields : Symbol | String) : Tape::Array(Tape::Array(TapeValue)) | ErrorBase
+    pluck_tape_columns(fields.to_a.map { |field| field.to_s })
+  end
+
+  def pluck_tape_columns(field_names : Array(String)) : Tape::Array(Tape::Array(TapeValue)) | ErrorBase
+    return Tape::Array(Tape::Array(TapeValue)).new(0) if is_none?
+    query_assembler = prepared { |built| built }!
+    sql = query_assembler.pluck_sql(field_names)
+    assembled_error = query_assembler.error
+    return assembled_error unless assembled_error.nil?
+    ::Grant::Query::Executor::PluckTape(Model).new(sql, query_assembler.numbered_parameters, field_names.size).run
+  end
+
+  def pick_tape(*fields : Symbol | String) : Tape::Array(TapeValue) | Nil | ErrorBase
+    chain_copy.limit_in_place(1).pluck_tape_columns(fields.to_a.map { |field| field.to_s })!.first?
   end
 
   def pick(*fields : Symbol | String) : Array(Value) | Nil | ErrorBase

@@ -1,4 +1,5 @@
 module test/grant_tasks_truncate_all_test
+import std/indexable
 import grant/tasks/database::{Database}
 import grant/schema/internal_metadata::{InternalMetadata, ProtectedEnvironmentError}
 import test/m04_tasks_fixture

@@ -1,4 +1,5 @@
 module test/grant_query_w6_merge_order_test
+import std/indexable
 import grant/base::{Base}
 import grant/query/builder::{Builder}
 import std/text

@@ -1,4 +1,6 @@
 module test/grant_persistence_destroyed_guard_test
+import std/tuple
+import std/indexable
 import grant
 import grant/base::{Base}
 import grant/errors::{RecordDestroyedError}

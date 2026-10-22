@@ -1,4 +1,5 @@
 module test/grant_schema_foreign_keys_test
+import std/tuple
 import grant/schema/schema_statements::{RecordingStatements, AdapterStatements}
 import grant/adapter/schema::{Dialect, UnsupportedOperation, InvalidDefinition}
 import grant/schema/column_info::{ReferentialAction}

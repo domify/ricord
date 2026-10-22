@@ -1,4 +1,5 @@
 module test/grant_validations_w6_presence_message_test
+import std/indexable
 import grant/base::{Base}
 import grant/error
 import grant/errors::{RecordInvalid}

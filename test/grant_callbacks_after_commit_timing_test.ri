@@ -1,4 +1,5 @@
 module test/grant_callbacks_after_commit_timing_test
+import std/indexable
 import grant/base::{Base}
 import grant/errors::{Rollback, ErrorBase}
 import grant/transaction::{enqueue_pending_callback}

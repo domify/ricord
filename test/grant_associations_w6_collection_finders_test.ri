@@ -1,5 +1,6 @@
 module test/grant_associations_w6_collection_finders_test
 
+import std/named_tuple
 import grant/base::{Base}
 import grant/querying::{NotFound}
 import grant/events::{SQL}

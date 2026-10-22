@@ -1,4 +1,5 @@
 module test/grant_perf_w6_primary_key_lookup_scopes_test
+import std/indexable
 import grant/base::{Base}
 import grant/querying::{NotFound}
 import grant/error::{ErrorBase}

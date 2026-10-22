@@ -1,4 +1,7 @@
 module grant/schema/schema_statements
+import std/tuple
+import std/text
+import std/indexable
 import grant/adapter/schema::{Dialect, UnsupportedOperation, InvalidDefinition}
 import grant/schema/constraint_catalog
 import grant/schema/constraint_definition::{ForeignKeyDefinition, CheckConstraintDefinition, UniqueConstraintDefinition, ExclusionConstraintDefinition}

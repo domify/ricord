@@ -1,4 +1,5 @@
 module test/grant_schema_timestamps_ddl_test
+import std/indexable
 import grant/base::{Base}
 import grant/schema/schema_statements::{RecordingStatements, AdapterStatements}
 import grant/schema/table_definition::{TableDefinition}

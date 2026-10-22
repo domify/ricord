@@ -1,4 +1,5 @@
 module test/grant_connection_w6_statement_invalid_sql_query_mutations_test
+import std/indexable
 import grant
 import grant/base::{Base}
 import test/w6_c04_support::{W6C04}

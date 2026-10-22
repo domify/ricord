@@ -1,4 +1,5 @@
 module test/grant_query_select_order_expressions_test
+import std/indexable
 import grant
 import grant/base::{Base}
 import grant/query/builder::{Builder}

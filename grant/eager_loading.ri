@@ -1,4 +1,5 @@
 module grant/eager_loading
+import std/tuple
 
 pub import grant/error
 

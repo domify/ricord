@@ -1,5 +1,6 @@
 module test/grant_columns_w6b_bigdecimal_column_test
 
+import std/indexable
 import grant/base::{Base}
 import std/big::{BigDecimal}
 import test/spec_helper::{CURRENT_ADAPTER, register_spec_connections}

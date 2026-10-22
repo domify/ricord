@@ -1,4 +1,5 @@
 module test/grant_schema_verify_model_test
+import std/indexable
 import grant/base::{Base}
 import std/time::{Time}
 import grant/schema/verify::{Drift, DriftError}

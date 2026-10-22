@@ -1,5 +1,7 @@
 module test/grant_schema_w6b_internal_metadata_wired_test
 
+import std/tuple
+import std/indexable
 import grant/base::{Base}
 import grant/schema/migration_context::{MigrationContext}
 import grant/schema/migration::{InvalidMigration}

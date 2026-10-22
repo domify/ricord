@@ -1,5 +1,6 @@
 module grant/result
 
+import std/int
 import grant/adapter/driver::{Value, ResultSet}
 import grant/errors::{DatabaseError}
 import grant/error::{ArgumentError}

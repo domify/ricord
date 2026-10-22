@@ -1,5 +1,6 @@
 module test/grant_persistence_w6_model_name_test
 
+import std/indexable
 import grant/base::{Base}
 import grant/model_name
 import grant/i18n

@@ -1,5 +1,7 @@
 module grant/convenience_methods
 pub import grant/timestamps
+import std/tuple
+import std/text
 import grant/query/builder::{Builder}
 import grant/adapter/driver::{Value}
 import grant/error::{ErrorBase}

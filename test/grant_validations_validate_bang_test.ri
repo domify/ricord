@@ -1,4 +1,5 @@
 module test/grant_validations_validate_bang_test
+import std/indexable
 import grant/base::{Base}
 import grant/errors::{RecordInvalid, RecordNotSaved}
 import grant/error::{ErrorBase}

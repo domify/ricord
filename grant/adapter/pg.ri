@@ -1,6 +1,7 @@
 module grant/adapter/pg
 
 pub import grant/adapter/pg_connection
+import std/indexable
 import std/text
 import grant/adapter/base::{Base}
 import grant/adapter/server_version::{ServerVersion}

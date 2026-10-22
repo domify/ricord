@@ -1,4 +1,6 @@
 module test/grant_attributes_normalized_query_test
+import std/named_tuple
+import std/indexable
 import grant/base::{Base}
 import test/spec_helper::{CURRENT_ADAPTER, register_spec_connections}
 import std/text

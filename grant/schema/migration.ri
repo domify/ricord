@@ -1,5 +1,6 @@
 module grant/schema/migration
 
+import std/indexable
 import grant/adapter/base::{Base}
 import grant/schema/schema_statements::{AdapterStatements, RecordingStatements}
 import grant/schema/table_definition::{TableDefinition}

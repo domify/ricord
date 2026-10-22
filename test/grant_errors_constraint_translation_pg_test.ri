@@ -1,4 +1,5 @@
 module test/grant_errors_constraint_translation_pg_test
+import std/indexable
 import std/text
 import grant/base::{Base}
 import grant/adapter/pg::{Pg}

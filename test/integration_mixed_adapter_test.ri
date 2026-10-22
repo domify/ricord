@@ -1,5 +1,6 @@
 module test/integration_mixed_adapter_test
 
+import std/indexable
 import grant/base::{Base}
 import grant/adapter/sqlite::{Sqlite}
 import grant/adapter/pg::{Pg}

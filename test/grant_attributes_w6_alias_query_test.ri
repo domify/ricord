@@ -1,5 +1,6 @@
 module test/grant_attributes_w6_alias_query_test
 
+import std/named_tuple
 import test/attribute_spec_models::{AttrPost}
 import test/spec_helper::{register_spec_connections}
 

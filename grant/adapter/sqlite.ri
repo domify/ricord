@@ -5,6 +5,7 @@ pub alias Connection = ::Grant::Adapter::SqliteConnection::Connection
 pub alias Value = ::Grant::Adapter::SqliteConnection::Value
 pub alias Row = ::Grant::Adapter::SqliteConnection::Row
 pub alias Mutation = ::Grant::Adapter::SqliteConnection::Mutation
+import std/indexable
 import std/dir::{Dir}
 import std/text
 import std/file::{File}

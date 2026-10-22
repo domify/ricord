@@ -1,5 +1,6 @@
 module grant/adapter/test_helpers
 
+import std/tuple
 import grant/adapter/driver::{Connection}
 import grant/adapter/base::{Base}
 import grant/adapter/sqlite_test_helpers::{SqliteTestHelpers}

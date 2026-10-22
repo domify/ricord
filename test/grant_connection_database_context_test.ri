@@ -1,4 +1,5 @@
 module test/grant_connection_database_context_test
+import std/indexable
 import grant/base::{Base}
 
 pub class ConnectionDatabaseContextTestModel < Base

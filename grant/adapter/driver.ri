@@ -25,6 +25,8 @@ pub alias Value = DBValue
 pub alias NativeConnection = ::Db::Core::Connection
 pub alias NativeResultSet = ::Db::Core::ResultSet
 pub alias Row = Hash(String, Value)
+# A column read onto the tape: text and bytes as `Tape::String`, the rest as `Value`.
+pub alias TapeValue = Tape::String | Value
 
 pub struct Mutation
   getter changes : Int64
@@ -56,8 +58,8 @@ pub abstract class ResultSet
   abstract def each(&block : -> T) : Nil | T | DatabaseError forall T
   abstract def move_next : Bool | DatabaseError
   abstract def read : Value | DatabaseError
-  # The next text or bytes column on the running fiber's tape; nil for NULL.
-  abstract def read_tape : Tape::String | Nil | DatabaseError
+  # The next column, its text or bytes on the running fiber's tape.
+  abstract def read_tape : TapeValue | DatabaseError
 
   def column_count : Int32
     column_names.size
@@ -165,10 +167,11 @@ pub class LibraryResultSet < ResultSet
     @owner.normalize(value)
   end
 
-  def read_tape : Tape::String | Nil | DatabaseError
+  def read_tape : TapeValue | DatabaseError
     value = @result.read_tape
     return @owner.statement_error(value, "query", @sql, @parameters) if value.is_a?(DBError)
-    value
+    return value if value.is_a?(Tape::String)
+    @owner.normalize(value)
   end
 end
 

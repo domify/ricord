@@ -113,6 +113,33 @@ pub class Pluck(Model)
   end
 end
 
+# `Pluck` with the rows on the running fiber's tape: text columns are
+# `Tape::String`s, never heap Strings.
+pub class PluckTape(Model)
+  def initialize(@sql : String, @args : Array(::Grant::Adapter::Driver::Value), @width : Int32)
+  end
+
+  def raw_sql : String
+    @sql
+  end
+
+  def run : Tape::Array(Tape::Array(::Grant::Adapter::Driver::TapeValue)) | ErrorBase
+    width = @width
+    ::Grant::Query::Executor.open_statement(Model.adapter, @sql, @args) do |db|
+      db.query(@sql, @args) do |result_set|
+        rows = Tape::Array(Tape::Array(::Grant::Adapter::Driver::TapeValue)).new
+        result_set.each do
+          row = Tape::Array(::Grant::Adapter::Driver::TapeValue).new(width)
+          width.times { row << result_set.read_tape! }
+          rows << row
+          nil
+        end!
+        rows
+      end
+    end
+  end
+end
+
 pub class Aggregate(Model)
   def initialize(@sql : String, @args : Array(::Grant::Adapter::Driver::Value), @group_count : Int32)
   end

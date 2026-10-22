@@ -1,4 +1,7 @@
 module test/grant_scoping_default_scope_everywhere_test
+import std/named_tuple
+import std/tuple
+import std/indexable
 import grant/base::{Base}
 import grant/query/builder::{Builder}
 import grant/adapter/driver::{Value}

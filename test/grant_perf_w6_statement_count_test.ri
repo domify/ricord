@@ -1,4 +1,5 @@
 module test/grant_perf_w6_statement_count_test
+import std/indexable
 import grant/base::{Base}
 import grant/errors::{DatabaseError}
 import grant/error::{ErrorBase}

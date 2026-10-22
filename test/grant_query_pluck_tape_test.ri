@@ -1,0 +1,46 @@
+module test/grant_query_pluck_tape_test
+import grant/base::{Base}
+import std/indexable
+import test/spec_helper::{register_spec_connections}
+
+pub class TapePost < Base
+  connection {{ (env("CURRENT_ADAPTER") || "sqlite").id }}
+  table tape_posts
+  column id : Int64, primary: true
+  column title : String?
+  column score : Int64?
+end
+
+register_spec_connections
+TapePost.migrator.drop_and_create.or_panic
+TapePost.create_strict(title: "café", score: 3_i64).or_panic
+TapePost.create_strict(title: nil, score: 1_i64).or_panic
+TapePost.create_strict(title: "b", score: 2_i64).or_panic
+
+# pluck_tape answers the same rows as pluck, text on the tape.
+heap = TapePost.order(:score).pluck(:title, :score).or_panic
+seen = [] of String
+tape do
+  rows = TapePost.order(:score).pluck_tape(:title, :score).or_panic
+  assert rows.size == 3
+  rows.each do |row|
+    assert row.size == 2
+    title = row[0]
+    seen << (title.is_a?(Tape::String) ? title.to_heap : title.inspect) + "/" + row[1].inspect
+  end
+end
+assert seen == ["nil/1", "b/2", "café/3"]
+assert heap.map { |row| row[1] } == [1_i64, 2_i64, 3_i64]
+
+# pick_tape is the first row, nil when there is none; none is empty.
+picked = ""
+tape do
+  row = TapePost.where(score: 3_i64).pick_tape(:title)
+  if row.is_a?(Tape::Array(::Grant::Adapter::Driver::TapeValue))
+    title = row[0]
+    picked = title.to_heap if title.is_a?(Tape::String)
+  end
+  assert TapePost.where(score: 99_i64).pick_tape(:title).or_panic.nil?
+  assert TapePost.none.pluck_tape(:title).or_panic.empty?
+end
+assert picked == "café"

@@ -1,4 +1,5 @@
 module test/grant_encryption_w6b_lazy_decrypt_database_readers_test
+import std/indexable
 import grant/base::{Base}
 import grant/encryption/cipher::{Cipher, DecryptionError}
 import grant/encryption/key_provider::{KeyProvider}

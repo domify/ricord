@@ -1,4 +1,5 @@
 module test/grant_schema_environment_protection_test
+import std/tuple
 import grant/schema/migration_context::{MigrationContext}
 import grant/schema/internal_metadata::{InternalMetadata, ProtectedEnvironmentError, EnvironmentMismatchError}
 import test/m03_fixture

@@ -1,4 +1,5 @@
 module test/grant_validations_errors_details_options_test
+import std/indexable
 import grant/base::{Base}
 import grant/errors::{Errors}
 import grant/error

@@ -1,6 +1,7 @@
 module my_app/namespace
 
 pub import grant/base
+import std/indexable
 import grant/base::{Base}
 
 pub class Model < Base

@@ -1,4 +1,5 @@
 module test/grant_persistence_dirty_tracking_api_test
+import std/indexable
 import grant/base::{Base}
 import test/spec_helper::{register_spec_connections}
 

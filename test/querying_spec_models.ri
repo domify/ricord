@@ -1,5 +1,8 @@
 module test/querying_spec_models
 pub import grant/base
+import std/named_tuple
+import std/float
+import std/indexable
 import grant/base::{Base}
 import std/time::{Time}
 

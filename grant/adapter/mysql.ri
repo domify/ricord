@@ -1,4 +1,5 @@
 module grant/adapter/mysql
+import std/indexable
 import grant/adapter/base::{Base}
 
 # Configuration files can describe MySQL even in a SQLite/PostgreSQL build.

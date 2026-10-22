@@ -1,5 +1,6 @@
 module grant/query/where_composition
 
+import std/tuple
 import grant/adapter/driver::{Value}
 import grant/error::{ErrorBase, ArgumentError}
 import grant/query/predicate_renderer::{PredicateRenderer}

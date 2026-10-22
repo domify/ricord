@@ -1,4 +1,5 @@
 module test/grant_encryption_w6b_lazy_decrypt_marker_test
+import std/indexable
 import grant/base::{Base}
 import grant/encryption/sealed::{ArgumentError}
 import grant/encryption/sealed

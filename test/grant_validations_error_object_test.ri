@@ -1,4 +1,5 @@
 module test/grant_validations_error_object_test
+import std/indexable
 import grant/base::{Base}
 import grant/error::{Error, Value}
 import grant/i18n
