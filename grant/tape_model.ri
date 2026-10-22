@@ -3,6 +3,9 @@ module grant/tape_model
 import std/indexable
 import std/tuple
 import std/named_tuple
+import std/text
+import std/time::{Time}
+import std/uuid::{UUID}
 import grant/adapter/driver::{Value, TapeValue}
 import grant/adapter/base
 import grant/connections::{Connections}
@@ -12,23 +15,74 @@ import grant/query/executor
 # PROTOTYPE: a model whose records live on the running fiber's tape, the
 # request's in a web app. `User.find(1)` reads the row straight onto the
 # tape, the view writes `user.name` (a `Tape::String`) into the response, and
-# the request's end frees it all. A record is a handle: its values sit in one
-# `Tape::Array`, which copies share, so `update` through any copy is seen by
-# all. The compiler keeps a record from outliving the tape; `to_heap` copies
-# one into a NamedTuple of heap values.
+# the request's end frees it all. A record is a handle: its values, change
+# marks and state sit in `Tape::Array`s that copies share, so a change made
+# through any copy is seen by all. The compiler keeps a record from outliving
+# the tape; `to_heap` copies one into a NamedTuple of heap values.
 #
-#     ::Grant::TapeModel.tape_model User, "users", "sqlite",
-#       {id: Int64, name: String?, score: Int64?}
+#     ::Grant::TapeModel.model User, table: "users", connection: "sqlite" do
+#       column id : Int64, primary: true
+#       column name : String?
+#       column team_id : Int64?
+#       column created_at : Time?
+#       column updated_at : Time?
+#       belongs_to team : Team, foreign_key: team_id
+#       has_many posts : Post, foreign_key: user_id
+#       validates_presence name
+#       before_save :strip_name
 #
-# The first column is the primary key. Text columns read as `Tape::String`.
-pub macro tape_model(name, table, connection, columns)
+#       def strip_name : Nil
+#         ...
+#       end
+#     end
+#
+# Columns are `Int64`, `Int32`, `Float64`, `Bool`, `String`, `Time` or
+# `UUID`, nilable or not. Text columns read as `Tape::String`. `created_at`
+# and `updated_at` are set on save when declared. Any `def` in the block
+# becomes a method of the model.
+pub macro model(name, table, connection, &block)
+  {% declarations = block.body.is_a?(Expressions) ? block.body.expressions : [block.body] %}
+  {% calls = [] of ASTNode %}
+  {% defs = [] of ASTNode %}
+  {% nodes = [] of ASTNode %}
+  {% for declaration in declarations %}
+    {% node = declaration.is_a?(Assign) ? declaration.value : declaration %}
+    {% if node.is_a?(Expressions) %}
+      {% for inner in node.expressions %}
+        {% nodes << (inner.is_a?(Assign) ? inner.value : inner) %}
+      {% end %}
+    {% else %}
+      {% nodes << node %}
+    {% end %}
+  {% end %}
+  {% for node in nodes %}
+    {% if node.is_a?(Def) %}
+      {% defs << node %}
+    {% elsif node.is_a?(Call) && !node.name.starts_with?("__iyi") %}
+      {% calls << node %}
+    {% end %}
+  {% end %}
+  {% columns = calls.select { |call| call.name == "column" } %}
+  {% primary = columns.find { |call| call.named_args && call.named_args.any? { |arg| arg.name == "primary" } } || columns.first %}
+  {% primary_name = primary.args[0].var %}
+  {% column_names = columns.map { |call| call.args[0].var.stringify } %}
+
   @[OnTape]
   pub struct {{ name }}
-    COLUMNS = [{% for key in columns.keys %}{{ key.stringify }}, {% end %}] of String
+    COLUMNS = [{% for call in columns %}{{ call.args[0].var.stringify }}, {% end %}] of String
     TABLE = {{ table }}
-    PRIMARY = {{ columns.keys.first.stringify }}
+    PRIMARY = {{ primary_name.stringify }}
 
-    def initialize(@values : Tape::Array(::Grant::Adapter::Driver::TapeValue))
+    def initialize(@values : Tape::Array(::Grant::Adapter::Driver::TapeValue), @changed : Tape::Array(Bool),
+                   @state : Tape::Array(Bool), @errors : Array(String))
+    end
+
+    # A new, unsaved record with *attributes* set.
+    def self.new(**attributes) : {{ name }}
+      values = Tape::Array(::Grant::Adapter::Driver::TapeValue).new(COLUMNS.size, nil.as(::Grant::Adapter::Driver::TapeValue))
+      record = new(values, Tape::Array(Bool).new(COLUMNS.size, false), Tape::Array(Bool).new(2, false), [] of String)
+      record.assign(**attributes)
+      record
     end
 
     def self.adapter : ::Grant::Adapter::Base::Base
@@ -40,14 +94,32 @@ pub macro tape_model(name, table, connection, columns)
     end
 
     def self.select_sql : String
-      "SELECT " + COLUMNS.map { |column| quote(column) }.join(", ") + " FROM " + quote(TABLE)
+      "SELECT " + COLUMNS.map { |column| quote(TABLE) + "." + quote(column) }.join(", ") + " FROM " + quote(TABLE)
+    end
+
+    # A value to bind: tape text goes to the heap, a UUID as its text.
+    def self.bind(value : Tape::String) : ::Grant::Adapter::Driver::Value
+      value.to_heap
+    end
+
+    def self.bind(value : UUID) : ::Grant::Adapter::Driver::Value
+      value.to_s
+    end
+
+    def self.bind(value : ::Grant::Adapter::Driver::Value) : ::Grant::Adapter::Driver::Value
+      value
     end
 
     # One row of *result_set*, its columns in COLUMNS order, onto the tape.
     def self.load(result_set : ::Grant::Adapter::Driver::ResultSet) : {{ name }} | ::Grant::Error::ErrorBase
       values = Tape::Array(::Grant::Adapter::Driver::TapeValue).new(COLUMNS.size)
       COLUMNS.size.times { values << result_set.read_tape! }
-      new(values)
+      new(values, Tape::Array(Bool).new(COLUMNS.size, false), Tape::Array(Bool).new(2, true), [] of String).__loaded
+    end
+
+    protected def __loaded : {{ name }}
+      @state[1] = false
+      self
     end
 
     # The rows of *sql* as records on the tape.
@@ -65,101 +137,390 @@ pub macro tape_model(name, table, connection, columns)
       end
     end
 
-    def self.find(id : Int64) : {{ name }} | Nil | ::Grant::Error::ErrorBase
-      args = [id] of ::Grant::Adapter::Driver::Value
-      load_all(select_sql + " WHERE " + quote(PRIMARY) + " = ? LIMIT 1", args)!.first?
+    def self.execute(sql : String, args : Array(::Grant::Adapter::Driver::Value)) : ::Grant::Adapter::Driver::Mutation | ::Grant::Error::ErrorBase
+      statement = adapter.ensure_clause_template(sql)
+      ::Grant::Query::Executor.open_statement(adapter, statement, args) { |db| db.execute(statement, args) }
+    end
+
+    def self.find(id) : {{ name }} | Nil | ::Grant::Error::ErrorBase
+      Query.new.where({{ primary_name }}: id).first
+    end
+
+    def self.find_by(**criteria) : {{ name }} | Nil | ::Grant::Error::ErrorBase
+      Query.new.where(**criteria).first
+    end
+
+    def self.all : Query
+      Query.new
     end
 
     def self.where(**criteria) : Query
       Query.new.where(**criteria)
     end
 
+    def self.where(sql : String, *args) : Query
+      Query.new.where(sql, *args)
+    end
+
     def self.order(column : Symbol, direction : Symbol = :asc) : Query
       Query.new.order(column, direction)
     end
 
-    def self.create(**attributes) : {{ name }} | ::Grant::Error::ErrorBase
-      names = [] of String
-      args = [] of ::Grant::Adapter::Driver::Value
-      attributes.each do |key, value|
-        names << quote(key.to_s)
-        args << value
-      end
-      placeholders = names.map { "?" }.join(", ")
-      sql = adapter.ensure_clause_template("INSERT INTO " + quote(TABLE) + " (" + names.join(", ") + ") VALUES (" + placeholders + ")")
-      mutation = ::Grant::Query::Executor.open_statement(adapter, sql, args) { |db| db.insert(sql, args, PRIMARY) }!
-      found = find(mutation.last_insert_id)!
-      return ::Grant::Error::ErrorBase.new("created row was not found") if found.nil?
-      found
+    def self.count : Int64 | ::Grant::Error::ErrorBase
+      Query.new.count
     end
 
+    # A record saved with *attributes*; check `persisted?` and `errors` when
+    # a validation can refuse it.
+    def self.create(**attributes) : {{ name }} | ::Grant::Error::ErrorBase
+      record = new(**attributes)
+      record.save!
+      record
+    end
+
+    # ---------------------------------------------------------------- columns
+
     {% index = 0 %}
-    {% for key, type in columns %}
-      {% text = type.stringify.includes?("String") %}
-      {% nilable = type.stringify.ends_with?("?") || type.stringify.includes?("Nil") %}
-      {% plain = type.stringify.gsub(/\?$/, "").gsub(/ \| ::Nil| \| Nil/, "").id %}
-      def {{ key.id }} : {% if text %}Tape::String{% else %}{{ plain }}{% end %}{% if nilable %}?{% end %}
+    {% for call in columns %}
+      {% column = call.args[0].var %}
+      {% type = call.args[0].type.stringify %}
+      {% nilable = type.ends_with?("?") || type.includes?("Nil") || column == primary_name %}
+      {% kind = type.includes?("String") ? "text" : type.includes?("Int32") ? "int32" : type.includes?("Int64") ? "int64" : type.includes?("Float") ? "float" : type.includes?("Bool") ? "bool" : type.includes?("Time") ? "time" : type.includes?("UUID") ? "uuid" : "other" %}
+      {% result = kind == "text" ? "Tape::String" : kind == "int32" ? "Int32" : kind == "int64" ? "Int64" : kind == "float" ? "Float64" : kind == "bool" ? "Bool" : kind == "time" ? "Time" : kind == "uuid" ? "UUID" : type %}
+
+      def {{ column }} : {{ result.id }}{% if nilable %}?{% end %}
         value = @values[{{ index }}]
-        {% if nilable %}
-          value.is_a?({% if text %}Tape::String{% else %}{{ plain }}{% end %}) ? value : nil
+        {% if kind == "text" %}
+          converted = value.is_a?(Tape::String) ? value : (value.is_a?(String) ? Tape::String.new(value) : nil)
+        {% elsif kind == "int32" %}
+          converted = value.is_a?(Int64) ? value.to_i32 : (value.is_a?(Int32) ? value : nil)
+        {% elsif kind == "int64" %}
+          converted = value.is_a?(Int64) ? value : (value.is_a?(Int32) ? value.to_i64 : nil)
+        {% elsif kind == "float" %}
+          converted = value.is_a?(Float64) ? value : (value.is_a?(Float32) ? value.to_f64 : nil)
+        {% elsif kind == "bool" %}
+          converted = value.is_a?(Bool) ? value : (value.is_a?(Int64) ? value != 0 : nil)
+        {% elsif kind == "time" %}
+          converted = if value.is_a?(Time)
+                        value
+                      elsif value.is_a?(Tape::String) || value.is_a?(String)
+                        parsed = {{ name }}.adapter.read_time(value.is_a?(Tape::String) ? value.to_heap : value)
+                        parsed.is_a?(Time) ? parsed : nil
+                      end
+        {% elsif kind == "uuid" %}
+          converted = if value.is_a?(Tape::String)
+                        UUID.parse(value).to_heap
+                      elsif value.is_a?(String)
+                        UUID.parse(value)
+                      end
         {% else %}
-          value.as({% if text %}Tape::String{% else %}{{ plain }}{% end %})
+          converted = value.is_a?({{ type.id }}) ? value : nil
         {% end %}
+        {% if nilable %}
+          converted
+        {% else %}
+          converted.as({{ result.id }})
+        {% end %}
+      end
+
+      def {{ column }}=(value) : Nil
+        @values[{{ index }}] = {{ name }}.__store_{{ column }}(value)
+        @changed[{{ index }}] = true
+        nil
+      end
+
+      def self.__store_{{ column }}(value : String) : ::Grant::Adapter::Driver::TapeValue
+        {% if kind == "uuid" %}value{% else %}Tape::String.new(value){% end %}
+      end
+
+      def self.__store_{{ column }}(value : Tape::String) : ::Grant::Adapter::Driver::TapeValue
+        value
+      end
+
+      def self.__store_{{ column }}(value : UUID) : ::Grant::Adapter::Driver::TapeValue
+        value.to_s
+      end
+
+      def self.__store_{{ column }}(value : Int32) : ::Grant::Adapter::Driver::TapeValue
+        value.to_i64
+      end
+
+      def self.__store_{{ column }}(value : Float32) : ::Grant::Adapter::Driver::TapeValue
+        value.to_f64
+      end
+
+      def self.__store_{{ column }}(value : ::Grant::Adapter::Driver::Value) : ::Grant::Adapter::Driver::TapeValue
+        value
       end
       {% index += 1 %}
     {% end %}
 
-    # Writes *attributes* to the row and to this record, which every copy of
-    # it sees. Heap text is copied onto the tape.
-    def update(**attributes) : Nil | ::Grant::Error::ErrorBase
+    def assign(**attributes : **T) : Nil forall T
+      \{% for key in T.keys %}
+        self.\{{ key.id }} = attributes[:\{{ key.id }}]
+      \{% end %}
+      nil
+    end
+
+    # ------------------------------------------------------------------ state
+
+    def persisted? : Bool
+      @state[0] && !@state[1]
+    end
+
+    def new_record? : Bool
+      !@state[0]
+    end
+
+    def destroyed? : Bool
+      @state[1]
+    end
+
+    def changed? : Bool
+      @changed.any? { |mark| mark }
+    end
+
+    def changed_columns : Array(String)
+      names = [] of String
+      COLUMNS.size.times { |index| names << COLUMNS[index] if @changed[index] }
+      names
+    end
+
+    def errors : Array(String)
+      @errors
+    end
+
+    # ------------------------------------------------------------ validations
+
+    def valid? : Bool
+      @errors.clear
+      {% for call in calls.select { |call| call.name == "validates_presence" } %}
+        {% for arg in call.args %}
+          %value = {{ arg.id }}
+          if %value.nil? || (%value.is_a?(Tape::String) && %value.empty?)
+            @errors << {{ arg.id.stringify }} + " can't be blank"
+          end
+        {% end %}
+      {% end %}
+      {% for call in calls.select { |call| call.name == "validates_length" } %}
+        {% field = call.args[0].id %}
+        %text = {{ field }}
+        unless %text.nil?
+          {% for arg in call.named_args %}
+            {% if arg.name == "min" %}
+              @errors << {{ field.stringify }} + " is too short" if %text.bytesize < {{ arg.value }}
+            {% elsif arg.name == "max" %}
+              @errors << {{ field.stringify }} + " is too long" if %text.bytesize > {{ arg.value }}
+            {% end %}
+          {% end %}
+        end
+      {% end %}
+      {% for call in calls.select { |call| call.name == "validate" } %}
+        {{ call.args[0].id }}
+      {% end %}
+      @errors.empty?
+    end
+
+    # -------------------------------------------------------------- callbacks
+
+    {% for hook in %w(before_save after_save before_create after_create before_update after_update before_destroy after_destroy) %}
+      private def __run_{{ hook.id }} : Nil | ::Grant::Error::ErrorBase
+        {% for call in calls.select { |call| call.name == hook } %}
+          {% for arg in call.args %}
+            %result = {{ arg.id }}
+            return %result if %result.is_a?(::Grant::Error::ErrorBase)
+          {% end %}
+        {% end %}
+        nil
+      end
+    {% end %}
+
+    # ----------------------------------------------------------- persistence
+
+    # Saves the record: false when a validation refuses it (see `errors`), an
+    # error when the database or a callback does.
+    def save : Bool | ::Grant::Error::ErrorBase
+      return ::Grant::Error::ErrorBase.new("cannot save a destroyed record") if destroyed?
+      return false unless valid?
+      __run_before_save!
+      if persisted?
+        __run_before_update!
+        {% if column_names.includes?("updated_at") %}
+          self.updated_at = Time.utc if changed?
+        {% end %}
+        __update_row!
+        __run_after_update!
+      else
+        __run_before_create!
+        {% if column_names.includes?("created_at") %}
+          self.created_at = Time.utc if created_at.nil?
+        {% end %}
+        {% if column_names.includes?("updated_at") %}
+          self.updated_at = Time.utc if updated_at.nil?
+        {% end %}
+        __insert_row!
+        __run_after_create!
+      end
+      __run_after_save!
+      COLUMNS.size.times { |index| @changed[index] = false }
+      true
+    end
+
+    def save_strict : Nil | ::Grant::Error::ErrorBase
+      saved = save!
+      return ::Grant::Error::ErrorBase.new("validation failed: " + @errors.join(", ")) unless saved
+      nil
+    end
+
+    private def __insert_row : Nil | ::Grant::Error::ErrorBase
+      names = [] of String
+      args = [] of ::Grant::Adapter::Driver::Value
+      COLUMNS.size.times do |index|
+        next unless @changed[index]
+        names << {{ name }}.quote(COLUMNS[index])
+        args << __bind_at(index)
+      end
+      adapter = {{ name }}.adapter
+      sql = if names.empty?
+              "INSERT INTO " + {{ name }}.quote(TABLE) + " DEFAULT VALUES"
+            else
+              "INSERT INTO " + {{ name }}.quote(TABLE) + " (" + names.join(", ") + ") VALUES (" + names.map { "?" }.join(", ") + ")"
+            end
+      statement = adapter.ensure_clause_template(sql)
+      mutation = ::Grant::Query::Executor.open_statement(adapter, statement, args) { |db| db.insert(statement, args, PRIMARY) }!
+      self.{{ primary_name }} = mutation.last_insert_id if {{ primary_name }}.nil?
+      @state[0] = true
+      nil
+    end
+
+    private def __update_row : Nil | ::Grant::Error::ErrorBase
       sets = [] of String
       args = [] of ::Grant::Adapter::Driver::Value
-      attributes.each do |key, value|
-        sets << {{ name }}.quote(key.to_s) + " = ?"
-        args << value
+      COLUMNS.size.times do |index|
+        next unless @changed[index]
+        sets << {{ name }}.quote(COLUMNS[index]) + " = ?"
+        args << __bind_at(index)
       end
-      args << {{ columns.keys.first.id }}
-      adapter = {{ name }}.adapter
-      sql = adapter.ensure_clause_template("UPDATE " + {{ name }}.quote(TABLE) + " SET " + sets.join(", ") + " WHERE " + {{ name }}.quote(PRIMARY) + " = ?")
-      ::Grant::Query::Executor.open_statement(adapter, sql, args) { |db| db.execute(sql, args) }!
-      attributes.each do |key, value|
-        index = COLUMNS.index(key.to_s)
-        next if index.nil?
-        @values[index] = value.is_a?(String) ? Tape::String.new(value) : value
-      end
+      return nil if sets.empty?
+      args << {{ name }}.bind({{ primary_name }})
+      {{ name }}.execute("UPDATE " + {{ name }}.quote(TABLE) + " SET " + sets.join(", ") + " WHERE " + {{ name }}.quote(PRIMARY) + " = ?", args)!
+      nil
+    end
+
+    private def __bind_at(index : Int32) : ::Grant::Adapter::Driver::Value
+      value = @values[index]
+      value.is_a?(Tape::String) ? value.to_heap : value
+    end
+
+    # Sets *attributes* and saves.
+    def update(**attributes) : Bool | ::Grant::Error::ErrorBase
+      assign(**attributes)
+      save
+    end
+
+    # Runs the destroy callbacks and deletes the row.
+    def destroy : Bool | ::Grant::Error::ErrorBase
+      return false unless persisted?
+      __run_before_destroy!
+      delete!
+      __run_after_destroy!
+      true
+    end
+
+    # Deletes the row without callbacks.
+    def delete : Nil | ::Grant::Error::ErrorBase
+      args = [{{ name }}.bind({{ primary_name }})] of ::Grant::Adapter::Driver::Value
+      {{ name }}.execute("DELETE FROM " + {{ name }}.quote(TABLE) + " WHERE " + {{ name }}.quote(PRIMARY) + " = ?", args)!
+      @state[1] = true
       nil
     end
 
     # The record's values copied to the heap, to keep past the tape.
     def to_heap
       {
-        {% for key, type in columns %}
-          {% if type.stringify.includes?("String") %}
-            {{ key.id }}: (%text = {{ key.id }}).nil? ? nil : %text.to_heap,
+        {% for call in columns %}
+          {% column = call.args[0].var %}
+          {% if call.args[0].type.stringify.includes?("String") %}
+            {{ column }}: (%text = {{ column }}).nil? ? nil : %text.to_heap,
           {% else %}
-            {{ key.id }}: {{ key.id }},
+            {{ column }}: {{ column }},
           {% end %}
         {% end %}
       }
     end
 
+    # ----------------------------------------------------------- associations
+
+    {% for call in calls.select { |call| call.name == "belongs_to" } %}
+      {% target = call.args[0].type %}
+      {% key = call.named_args.find { |arg| arg.name == "foreign_key" }.value.id %}
+      def {{ call.args[0].var }} : {{ target }} | Nil | ::Grant::Error::ErrorBase
+        id = {{ key }}
+        id.nil? ? nil : {{ target }}.find(id)
+      end
+
+      def {{ call.args[0].var }}=(record : {{ target }}) : Nil
+        self.{{ key }} = record.id
+        nil
+      end
+    {% end %}
+
+    {% for call in calls.select { |call| call.name == "has_many" } %}
+      {% target = call.args[0].type %}
+      {% key = call.named_args.find { |arg| arg.name == "foreign_key" }.value.id %}
+      def {{ call.args[0].var }} : {{ target }}::Query
+        {{ target }}.where({{ key }}: {{ primary_name }})
+      end
+    {% end %}
+
+    {% for definition in defs %}
+      {{ definition }}
+    {% end %}
+
     # A relation on the heap: conditions and order only, never records.
     class Query
-      @conditions = [] of String
+      # Each group's conditions are joined with AND, the groups with OR.
+      @groups = [[] of String]
       @args = [] of ::Grant::Adapter::Driver::Value
       @order = ""
+      @limit : Int32? = nil
+      @offset : Int32? = nil
 
       def where(**criteria) : Query
         criteria.each do |key, value|
-          column = {{ name }}.quote(key.to_s)
+          column = {{ name }}.quote({{ name }}::TABLE) + "." + {{ name }}.quote(key.to_s)
           if value.nil?
-            @conditions << column + " IS NULL"
+            @groups.last << column + " IS NULL"
+          elsif value.is_a?(Array)
+            if value.empty?
+              @groups.last << "1 = 0"
+            else
+              @groups.last << column + " IN (" + value.map { "?" }.join(", ") + ")"
+              value.each { |item| @args << {{ name }}.bind(item) }
+            end
+          elsif value.is_a?(Range)
+            @groups.last << column + " >= ?"
+            @args << {{ name }}.bind(value.begin)
+            @groups.last << column + (value.exclusive? ? " < ?" : " <= ?")
+            @args << {{ name }}.bind(value.end)
           else
-            @conditions << column + " = ?"
-            @args << value
+            @groups.last << column + " = ?"
+            @args << {{ name }}.bind(value)
           end
         end
         self
+      end
+
+      def where(sql : String, *args) : Query
+        @groups.last << "(" + sql + ")"
+        args.each { |arg| @args << {{ name }}.bind(arg) }
+        self
+      end
+
+      # Starts an OR group: `where(a: 1).or_where(b: 2)` is `a = 1 OR b = 2`.
+      def or_where(**criteria) : Query
+        @groups << [] of String
+        where(**criteria)
       end
 
       def order(column : Symbol, direction : Symbol = :asc) : Query
@@ -167,9 +528,29 @@ pub macro tape_model(name, table, connection, columns)
         self
       end
 
+      def limit(count : Int32) : Query
+        @limit = count
+        self
+      end
+
+      def offset(count : Int32) : Query
+        @offset = count
+        self
+      end
+
+      def where_sql : String
+        groups = @groups.reject(&.empty?)
+        return "" if groups.empty?
+        " WHERE " + groups.map { |group| "(" + group.join(" AND ") + ")" }.join(" OR ")
+      end
+
       def to_sql : String
-        where_sql = @conditions.empty? ? "" : " WHERE " + @conditions.join(" AND ")
-        {{ name }}.select_sql + where_sql + @order
+        sql = {{ name }}.select_sql + where_sql + @order
+        limit = @limit
+        sql += " LIMIT " + limit.to_s unless limit.nil?
+        offset = @offset
+        sql += " OFFSET " + offset.to_s unless offset.nil?
+        sql
       end
 
       def to_a : Tape::Array({{ name }}) | ::Grant::Error::ErrorBase
@@ -182,7 +563,47 @@ pub macro tape_model(name, table, connection, columns)
       end
 
       def first : {{ name }} | Nil | ::Grant::Error::ErrorBase
-        to_a!.first?
+        previous = @limit
+        @limit = 1
+        records = to_a
+        @limit = previous
+        records!.first?
+      end
+
+      def count : Int64 | ::Grant::Error::ErrorBase
+        sql = "SELECT COUNT(*) FROM " + {{ name }}.quote({{ name }}::TABLE) + where_sql
+        statement = {{ name }}.adapter.ensure_clause_template(sql)
+        args = @args
+        value = ::Grant::Query::Executor.open_statement({{ name }}.adapter, statement, args) do |db|
+          db.query(statement, args) do |result_set|
+            count = 0_i64
+            result_set.each do
+              read = result_set.read!
+              count = read.is_a?(Int64) ? read : (read.is_a?(Int32) ? read.to_i64 : 0_i64)
+              nil
+            end!
+            count
+          end
+        end
+        value
+      end
+
+      def exists? : Bool | ::Grant::Error::ErrorBase
+        count! > 0
+      end
+
+      def delete_all : Int64 | ::Grant::Error::ErrorBase
+        {{ name }}.execute("DELETE FROM " + {{ name }}.quote({{ name }}::TABLE) + where_sql, @args)!.changes
+      end
+
+      def destroy_all : Int64 | ::Grant::Error::ErrorBase
+        destroyed = 0_i64
+        to_a!.each do |record|
+          outcome = record.destroy
+          return outcome if outcome.is_a?(::Grant::Error::ErrorBase)
+          destroyed += 1 if outcome
+        end
+        destroyed
       end
     end
   end

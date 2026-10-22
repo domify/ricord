@@ -1,18 +1,85 @@
 module test/grant_tape_model_test
 import std/indexable
 import std/env::{ENV}
+import std/time::{Time}
+import std/uuid::{UUID}
 import grant/tape_model
 import test/spec_helper::{register_spec_connections}
 
-::Grant::TapeModel.tape_model TapeUser, "tape_users", {{ env("CURRENT_ADAPTER") || "sqlite" }},
-  {id: Int64, name: String?, score: Int64?}
+# Callback calls, counted on the heap.
+class Counters
+  @@saves = 0
+  @@destroys = 0
+
+  def self.saves : Int32
+    @@saves
+  end
+
+  def self.saves=(value : Int32) : Int32
+    @@saves = value
+  end
+
+  def self.destroys : Int32
+    @@destroys
+  end
+
+  def self.destroys=(value : Int32) : Int32
+    @@destroys = value
+  end
+end
+
+::Grant::TapeModel.model TapeTeam, table: "tape_teams", connection: {{ env("CURRENT_ADAPTER") || "sqlite" }} do
+  column id : Int64, primary: true
+  column title : String
+  has_many users : TapeUser, foreign_key: team_id
+end
+
+::Grant::TapeModel.model TapeUser, table: "tape_users", connection: {{ env("CURRENT_ADAPTER") || "sqlite" }} do
+  column id : Int64, primary: true
+  column name : String?
+  column score : Int64?
+  column rating : Float64?
+  column active : Bool?
+  column token : UUID?
+  column team_id : Int64?
+  column created_at : Time?
+  column updated_at : Time?
+  belongs_to team : TapeTeam, foreign_key: team_id
+  validates_presence name
+  validates_length name, max: 12
+  validate :no_root
+  before_save :count_save
+  after_destroy :count_destroy
+
+  def no_root : Nil
+    @errors << "name is reserved" if name == "root"
+    nil
+  end
+
+  def count_save : Nil
+    Counters.saves += 1
+    nil
+  end
+
+  def count_destroy : Nil
+    Counters.destroys += 1
+    nil
+  end
+end
+
 
 register_spec_connections
-adapter = TapeUser.adapter
-key = (ENV["CURRENT_ADAPTER"]? || "sqlite") == "pg" ? "BIGSERIAL PRIMARY KEY" : "INTEGER PRIMARY KEY"
-adapter.open do |db|
+pg = (ENV["CURRENT_ADAPTER"]? || "sqlite") == "pg"
+key = pg ? "BIGSERIAL PRIMARY KEY" : "INTEGER PRIMARY KEY"
+time = pg ? "TIMESTAMP" : "TEXT"
+boolean = pg ? "BOOLEAN" : "INTEGER"
+real = pg ? "DOUBLE PRECISION" : "REAL"
+TapeUser.adapter.open do |db|
   db.execute("DROP TABLE IF EXISTS tape_users").or_panic
-  db.execute("CREATE TABLE tape_users (id #{key}, name TEXT, score BIGINT)").or_panic
+  db.execute("DROP TABLE IF EXISTS tape_teams").or_panic
+  db.execute("CREATE TABLE tape_teams (id #{key}, title TEXT NOT NULL)").or_panic
+  db.execute("CREATE TABLE tape_users (id #{key}, name TEXT, score BIGINT, rating #{real}, active #{boolean}, " \
+             "token TEXT, team_id BIGINT, created_at #{time}, updated_at #{time})").or_panic
 end.or_panic
 
 # A view: the record's text goes straight into the page on the tape.
@@ -26,40 +93,98 @@ def user_page(user : TapeUser) : Tape::String
 end
 
 html = ""
-kept = {id: 0_i64, name: nil.as(String?), score: nil.as(Int64?)}
+kept = {id: nil.as(Int64?), name: nil.as(String?), score: nil.as(Int64?), rating: nil.as(Float64?),
+        active: nil.as(Bool?), token: nil.as(UUID?), team_id: nil.as(Int64?),
+        created_at: nil.as(Time?), updated_at: nil.as(Time?)}
 names = [] of String
+token = UUID.v4
 
-# One request: find, render, update, query, all on the request's tape.
+# One request: create, find, render, update, query and destroy on its tape.
 tape do
-  created = TapeUser.create(name: "Ann", score: 3_i64).or_panic
-  TapeUser.create(name: "Bob", score: 9_i64).or_panic
-  TapeUser.create(name: nil, score: 9_i64).or_panic
+  team = TapeTeam.create(title: "Core").or_panic
+  ann = TapeUser.create(name: "Ann", score: 3_i64, rating: 4.5, active: true, token: token, team_id: team.id).or_panic
+  assert ann.persisted?
+  assert !ann.id.nil?
+  TapeUser.create(name: "Bob", score: 9_i64, active: false).or_panic
+  TapeUser.create(name: "Cy", score: 9_i64).or_panic
+  assert Counters.saves == 3
 
-  user = TapeUser.find(created.id).or_panic
+  # Columns read back with their types; text is on the tape.
+  user = TapeUser.find(ann.id).or_panic
   if user.is_a?(TapeUser)
     name = user.name
     assert name.is_a?(Tape::String) && name == "Ann"
     assert user.score == 3_i64
+    assert user.rating == 4.5
+    assert user.active == true
+    assert user.token == token
+    assert !user.created_at.nil?
+    assert !user.changed?
     html = user_page(user).to_heap
+
+    # belongs_to and has_many.
+    owner = user.team.or_panic
+    assert owner.is_a?(TapeTeam) && owner.title == "Core"
+    assert team.users.count.or_panic == 1_i64
+
+    # Dirty tracking: a setter marks its column, save writes only those.
+    user.score = 7_i64
+    assert user.changed?
+    assert user.changed_columns == ["score"]
+    assert user.save.or_panic
+    assert !user.changed?
 
     # A copy is the same record: an update through it is seen by both.
     same = user
-    same.update(name: "Bea", score: 9_i64).or_panic
+    assert same.update(name: "Bea", score: 9_i64).or_panic
     assert user.name == "Bea"
     assert user.score == 9_i64
-    assert TapeUser.find(user.id).or_panic.is_a?(TapeUser)
+    reread = TapeUser.find(user.id).or_panic
+    assert reread.is_a?(TapeUser) && reread.name == "Bea" && reread.score == 9_i64
     kept = user.to_heap
   end
 
-  TapeUser.where(score: 9_i64).order(:id).each do |record|
+  # Validations refuse a save and leave the row alone.
+  blank = TapeUser.new(score: 1_i64)
+  assert !blank.save.or_panic
+  assert blank.errors == ["name can't be blank"]
+  assert blank.new_record?
+  long = TapeUser.create(name: "a name that is too long").or_panic
+  assert !long.persisted?
+  assert long.errors == ["name is too long"]
+  root = TapeUser.new(name: "root")
+  assert !root.valid?
+  assert root.errors == ["name is reserved"]
+
+  # where: equality, nil, IN, ranges, raw SQL, OR groups, order and limit.
+  TapeUser.where(score: 9_i64).order(:name).each do |record|
     text = record.name
     names << (text.nil? ? "NULL" : text.to_heap)
   end.or_panic
+  assert TapeUser.where(name: ["Bob", "Cy"]).count.or_panic == 2_i64
+  assert TapeUser.where(name: [] of String).count.or_panic == 0_i64
+  assert TapeUser.where(score: 5_i64..9_i64).count.or_panic == 3_i64
+  assert TapeUser.where(score: 5_i64...9_i64).count.or_panic == 0_i64
+  assert TapeUser.where(team_id: nil).count.or_panic == 2_i64
+  assert TapeUser.where("score > ?", 8_i64).count.or_panic == 3_i64
+  assert TapeUser.where(name: "Bob").or_where(name: "Cy").count.or_panic == 2_i64
+  assert TapeUser.order(:name, :desc).limit(1).first.or_panic.as(TapeUser).name == "Cy"
   assert TapeUser.where(score: 1_i64).first.or_panic.nil?
   assert TapeUser.find(999_i64).or_panic.nil?
+  assert TapeUser.find_by(name: "Bob").or_panic.as(TapeUser).active == false
+
+  # destroy runs callbacks; delete_all does not.
+  cy = TapeUser.find_by(name: "Cy").or_panic.as(TapeUser)
+  assert cy.destroy.or_panic
+  assert cy.destroyed?
+  assert Counters.destroys == 1
+  assert TapeUser.where(name: "Bob").delete_all.or_panic == 1_i64
+  assert Counters.destroys == 1
+  assert TapeUser.count.or_panic == 1_i64
 end
 
 assert html == "<h1>Ann</h1><p>3</p>"
-assert names == ["Bea", "Bob", "NULL"]
+assert names == ["Bea", "Bob", "Cy"]
 assert kept[:name] == "Bea"
 assert kept[:score] == 9_i64
+assert kept[:token] == token
