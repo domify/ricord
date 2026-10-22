@@ -171,6 +171,8 @@ pub class LibraryResultSet < ResultSet
     value = @result.read_tape
     return @owner.statement_error(value, "query", @sql, @parameters) if value.is_a?(DBError)
     return value if value.is_a?(Tape::String)
+    # A time stays a Time: normalize would make it heap text to parse again.
+    return value if value.is_a?(Time)
     @owner.normalize(value)
   end
 end

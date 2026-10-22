@@ -1,27 +1,67 @@
-# Two app routes on a tape-backed model. GET reads a user onto the request's
-# tape and sends its page from there; PATCH changes it. The request's tape
-# frees the record and the page with it.
+# A users resource on tape-backed models, the way a Rails controller answers.
+# Each request reads its records onto the request's tape, writes its page
+# onto the tape and sends it from there; the request's end frees it all.
+#
+#   GET    /users      index: the users with their team, two queries in all
+#   GET    /users/:id  show
+#   POST   /users      create: 303 to the user, or 422 with the errors
+#   PATCH  /users/:id  update: 303 to the user, or 422 with the errors
+#   DELETE /users/:id  destroy: 303 to /users
+#
+# A browser form sends PATCH and DELETE as POST with `_method`; the app puts
+# web's OverrideMethodHandler in front of the routes for it.
 module app
 
 import std/text
-import web/web/router::{Router}
+import web/web/router::{Router, RouteHandler}
 import web/web/context::{Context}
+import web/web/handler::{Handler, chain}
+import web/web/override::{OverrideMethodHandler}
 import grant/grant/tape_model
 
-::Grant::TapeModel.model User, table: "users", connection: "sqlite" do
+::Grant::TapeModel.model Team do
+  connection sqlite
+  table teams
   column id : Int64, primary: true
-  column name : String?
-  validates_presence name
+  column title : String
 end
 
-# The page, written on the tape straight from the record's text.
-def user_page(user : User) : Tape::String
+::Grant::TapeModel.model User do
+  connection sqlite
+  table users
+  column id : Int64, primary: true
+  column name : String?
+  belongs_to team : Team, optional: true
+  validates_presence_of :name
+end
+
+# A page on the tape, from the records' text, with nothing copied.
+def index_page(users : Tape::Array(User)) : Tape::String
+  page = Tape::String::Writer.new(256)
+  page << "<ul>"
+  users.each do |user|
+    page << "<li>"
+    name = user.name
+    page << name unless name.nil?
+    team = user.team.or_panic
+    page << " (" << team.title << ")" if team.is_a?(Team)
+    page << "</li>"
+  end
+  page << "</ul>"
+  page.finish
+end
+
+def show_page(user : User) : Tape::String
   page = Tape::String::Writer.new(128)
   page << "<h1>"
   name = user.name
   page << name unless name.nil?
   page << "</h1>"
   page.finish
+end
+
+def errors_page(user : User) : Tape::String
+  Tape::String.new(user.errors.full_messages.join(", "))
 end
 
 # The user the path names, or a 404 sent and nil.
@@ -36,31 +76,65 @@ end
 pub def app_routes : Router
   router = Router.new
 
-  # Reads only. `send` writes the page from the tape straight to the socket;
-  # the server runs each request in a tape, so this `tape` shares it.
-  router.get "/users/:id" do |env|
+  # `tape` shares the tape the server opens per request: it costs nothing
+  # there, and gives a test without a server one.
+  router.get "/users" do |env|
     tape do
-      user = find_user(env)
-      env.response.send(user_page(user)) unless user.nil?
+      env.response.send(index_page(User.includes(:team).order(:name).to_a.or_panic))
     end
     ""
   end
 
-  # Changes the name from the form; a refused validation answers 422.
+  router.get "/users/:id" do |env|
+    tape do
+      user = find_user(env)
+      env.response.send(show_page(user)) unless user.nil?
+    end
+    ""
+  end
+
+  router.post "/users" do |env|
+    tape do
+      user = User.create(name: env.params.body["name"]? || "").or_panic
+      if user.persisted?
+        env.redirect("/users/" + user.to_param, 303)
+      else
+        env.response.status_code = 422
+        env.response.send(errors_page(user))
+      end
+    end
+    ""
+  end
+
   router.patch "/users/:id" do |env|
     tape do
       user = find_user(env)
       unless user.nil?
         if user.update(name: env.params.body["name"]? || "").or_panic
-          env.response.send(user_page(user))
+          env.redirect("/users/" + user.to_param, 303)
         else
           env.response.status_code = 422
-          env.response.send(Tape::String.new(user.errors.join(", ")))
+          env.response.send(errors_page(user))
         end
       end
     end
     ""
   end
 
+  router.delete "/users/:id" do |env|
+    tape do
+      user = find_user(env)
+      unless user.nil?
+        user.destroy.or_panic
+        env.redirect("/users", 303)
+      end
+    end
+    ""
+  end
+
   router
+end
+
+pub def app : Handler
+  chain([OverrideMethodHandler.new, RouteHandler.new(app_routes)] of Handler)
 end

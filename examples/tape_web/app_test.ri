@@ -1,40 +1,50 @@
-# The routes against a SQLite file; no port.
+# The users resource against a SQLite file; no port.
 module app_test
 
 import std/dir::{Dir}
 import std/file::{File}
-import web/web/router::{RouteHandler}
 import web/web/harness::*
 import grant/grant/connections::{Connections}
 import grant/grant/adapter/sqlite::{Sqlite}
-import app::{app_routes, User}
+import app::{app, User, Team}
 
 path = File.join(Dir.tempdir, "tape-web-test.sqlite3")
 File.delete(path) if File.exists?(path)
 Connections.register("sqlite", Sqlite.new("sqlite", "sqlite3:" + path))
-User.adapter.open { |db| db.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)") }.or_panic
+User.adapter.open do |db|
+  db.execute("CREATE TABLE teams (id INTEGER PRIMARY KEY, title TEXT NOT NULL)").or_panic
+  db.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, team_id BIGINT)").or_panic
+end.or_panic
 tape do
-  User.create(name: "Ann").or_panic
+  core = Team.create_strict(title: "Core").or_panic
+  User.create_strict(name: "Ann", team_id: core.id).or_panic
 end
 
-app = RouteHandler.new(app_routes)
+handler = app
 
-# GET shows the user and changes nothing.
-shown = dispatch(app, "GET", "/users/1").response
-assert shown.status_code == 200
-assert shown.body == "<h1>Ann</h1>"
-assert dispatch(app, "GET", "/users/1").response.body == "<h1>Ann</h1>"
-assert dispatch(app, "GET", "/users/9").response.status_code == 404
+# show and index read only.
+assert dispatch(handler, "GET", "/users/1").response.body == "<h1>Ann</h1>"
+assert dispatch(handler, "GET", "/users/9").response.status_code == 404
 
-# PATCH changes the name; GET then shows it.
-changed = dispatch(app, form_request("PATCH", "/users/1", "name=Bea")).response
-assert changed.status_code == 200
-assert changed.body == "<h1>Bea</h1>"
-assert dispatch(app, "GET", "/users/1").response.body == "<h1>Bea</h1>"
-
-# A blank name is refused and the stored one stays.
-refused = dispatch(app, form_request("PATCH", "/users/1", "name=")).response
+# create: 303 to the new user; a blank name answers 422 with the errors.
+created = dispatch(handler, form_request("POST", "/users", "name=Bob")).response
+assert created.status_code == 303
+assert created.headers["Location"]? == "/users/2"
+refused = dispatch(handler, form_request("POST", "/users", "name=")).response
 assert refused.status_code == 422
-assert refused.body == "name can't be blank"
-assert dispatch(app, "GET", "/users/1").response.body == "<h1>Bea</h1>"
-assert dispatch(app, form_request("PATCH", "/users/9", "name=X")).response.status_code == 404
+assert refused.body == "Name can't be blank"
+assert dispatch(handler, "GET", "/users").response.body == "<ul><li>Ann (Core)</li><li>Bob</li></ul>"
+
+# update from a browser form: POST with _method=patch.
+updated = dispatch(handler, form_request("POST", "/users/2", "_method=patch&name=Bea")).response
+assert updated.status_code == 303
+assert updated.headers["Location"]? == "/users/2"
+assert dispatch(handler, "GET", "/users/2").response.body == "<h1>Bea</h1>"
+assert dispatch(handler, form_request("PATCH", "/users/2", "name=")).response.status_code == 422
+
+# destroy from a browser form: POST with _method=delete, then 303 to the list.
+gone = dispatch(handler, form_request("POST", "/users/2", "_method=delete")).response
+assert gone.status_code == 303
+assert gone.headers["Location"]? == "/users"
+assert dispatch(handler, "GET", "/users/2").response.status_code == 404
+assert dispatch(handler, "GET", "/users").response.body == "<ul><li>Ann (Core)</li></ul>"
