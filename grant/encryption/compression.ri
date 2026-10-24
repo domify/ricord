@@ -12,5 +12,5 @@ end
 
 pub def decode(stored : String) : String
   return stored unless stored.starts_with?(MARKER)
-  Zlib.decompress(String.new(stored.bytesize - MARKER.bytesize) { |buffer| buffer.copy_from(stored.to_unsafe + MARKER.bytesize, stored.bytesize - MARKER.bytesize) })
+  Zlib.decompress(stored[MARKER.bytesize, stored.bytesize - MARKER.bytesize])
 end

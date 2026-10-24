@@ -1,3 +1,4 @@
+@[Ffi]
 module grant/encryption/cipher
 
 pub import grant/error
@@ -50,7 +51,7 @@ pub class Cipher
   end
 
   def self.bytes(data : String, offset : Int32, size : Int32) : String
-    String.new(size) { |buffer| buffer.copy_from(data.to_unsafe + offset, size) }
+    data[offset, size]
   end
 
   def self.random_bytes(size : Int32) : String | EncryptionError
@@ -83,17 +84,17 @@ pub class Cipher
     mac_key = digest(key, "authentication")
     iv = deterministic ? bytes(digest(enc_key, plaintext), 0, IV_SIZE) : random_bytes(IV_SIZE)!
     ciphertext = crypt(plaintext, enc_key, iv, true)!
-    header = String.new(1) { |buffer| buffer[0] = deterministic ? VERSION | DETERMINISTIC : VERSION }
+    header = String.build(1) { |io| io.write_byte(deterministic ? VERSION | DETERMINISTIC : VERSION) }
     payload = header + iv + ciphertext
     payload + digest(mac_key, payload)
   end
 
   def self.encrypted_payload?(data : String) : Bool
-    data.bytesize >= MIN_PAYLOAD_SIZE && (data.to_unsafe[0] & 0x7f_u8) == VERSION
+    data.bytesize >= MIN_PAYLOAD_SIZE && (data.byte_at(0) & 0x7f_u8) == VERSION
   end
 
   def self.deterministic_payload?(data : String) : Bool
-    !data.empty? && (data.to_unsafe[0] & DETERMINISTIC) != 0
+    !data.empty? && (data.byte_at(0) & DETERMINISTIC) != 0
   end
 
   def self.decrypt(encrypted : String, key : String) : String | DecryptionError | EncryptionError
@@ -112,7 +113,7 @@ pub class Cipher
     expected = digest(mac_key, payload)
     return nil unless secure_compare(provided, expected)
     return DecryptionError.new("Encrypted data too short for IV") if payload_size < 1 + IV_SIZE
-    version = payload.to_unsafe[0] & 0x7f_u8
+    version = payload.byte_at(0) & 0x7f_u8
     return DecryptionError.new("Unsupported encryption version: #{version}") unless version == VERSION
     iv = bytes(payload, 1, IV_SIZE)
     ciphertext = bytes(payload, 1 + IV_SIZE, payload_size - 1 - IV_SIZE)
@@ -122,7 +123,7 @@ pub class Cipher
   private def self.secure_compare(a : String, b : String) : Bool
     return false unless a.bytesize == b.bytesize
     result = 0_u8
-    a.bytesize.times { |i| result |= a.to_unsafe[i] ^ b.to_unsafe[i] }
+    a.bytesize.times { |i| result |= a.byte_at(i) ^ b.byte_at(i) }
     result == 0
   end
 end

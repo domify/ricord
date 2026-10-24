@@ -1,3 +1,4 @@
+@[Ffi]
 module grant/advisory_lock
 
 import std/digest::{MD5}

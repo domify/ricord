@@ -26,8 +26,8 @@ assert Cipher.decrypt(sealed, "wrong key").is_a?(DecryptionError)
 assert Cipher.decrypt("too short", key).is_a?(DecryptionError)
 assert Cipher.encrypt("", key).or_panic == ""
 assert Cipher.decrypt("", key).or_panic == ""
-corrupted = Cipher.bytes(sealed, 0, sealed.bytesize)
-corrupted.to_unsafe[corrupted.bytesize - 1] ^= 1_u8
+last = sealed.bytesize - 1
+corrupted = String.build(sealed.bytesize) { |io| io << sealed[0, last]; io.write_byte(sealed.byte_at(last) ^ 1_u8) }
 assert Cipher.decrypt(corrupted, key).is_a?(DecryptionError)
 
 (KeyProvider.primary_key = encoded_key).or_panic

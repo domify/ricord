@@ -1,3 +1,4 @@
+@[Ffi]
 module grant/secure_token
 
 pub import grant/error

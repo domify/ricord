@@ -92,7 +92,7 @@ end
 
 pub def identify_uuid(label : Symbol | String) : UUID
   namespace = UUID_NAMESPACE.bytes
-  data = String.new(16) { |pointer| 16.times { |index| pointer[index] = namespace[index] } }
+  data = String.build(16) { |io| 16.times { |index| io.write_byte(namespace[index]) } }
   digest = SHA1.hash_bytes(data + label.to_s)
   bytes = Array(UInt8).new(16) { |index| digest[index] }
   bytes[6] = (bytes[6] & 0x0f_u8) | 0x50_u8

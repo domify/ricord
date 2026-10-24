@@ -43,8 +43,7 @@ sealed = Base64.decode(UnencNote.note_encrypted_attribute.seal("hello world").or
 assert Cipher.encrypted_payload?(sealed)
 assert !Cipher.encrypted_payload?("hello world")
 assert !Cipher.encrypted_payload?("")
-broken = String.new(sealed.bytesize) { |buffer| buffer.copy_from(sealed.to_unsafe, sealed.bytesize) }
-broken.to_unsafe[0] = 0x7f_u8
+broken = String.build(sealed.bytesize) { |io| io.write_byte(0x7f_u8); io << sealed[1, sealed.bytesize - 1] }
 assert !Cipher.encrypted_payload?(broken)
 
 # it: does not use exceptions to decide (plaintext that is valid Base64 passes through)
@@ -74,8 +73,9 @@ assert UnencNote.find_strict(plain_id).is_a?(DecryptionError)
 Config.support_unencrypted_data = false
 UnencNote.clear.or_panic
 created = UnencNote.create_strict(note: "sealed").or_panic
-bytes = Base64.decode(unenc_raw(created.id))
-bytes.to_unsafe[bytes.bytesize - 1] = bytes.to_unsafe[bytes.bytesize - 1] ^ 0x01_u8
+sealed_bytes = Base64.decode(unenc_raw(created.id))
+last = sealed_bytes.bytesize - 1
+bytes = String.build(sealed_bytes.bytesize) { |io| io << sealed_bytes[0, last]; io.write_byte(sealed_bytes.byte_at(last) ^ 0x01_u8) }
 assert UnencNote.note_encrypted_attribute.open(Base64.encode(bytes)).is_a?(DecryptionError)
 
 # it: is honored by the generated getter of the <attr>_encrypted form

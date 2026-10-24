@@ -34,7 +34,7 @@ pub class Sqlite < Base
   private def parse_canonical_time(text : String) : Time?
     size = text.bytesize
     return nil if size < 19 || size == 20 || size > 29
-    bytes = text.to_unsafe
+    bytes = text.as_tape
     return nil unless bytes[4] == '-'.ord && bytes[7] == '-'.ord && bytes[10] == ' '.ord &&
                       bytes[13] == ':'.ord && bytes[16] == ':'.ord
     year = canonical_digits(bytes, 0, 4)
@@ -57,7 +57,7 @@ pub class Sqlite < Base
     Time.utc(year, month, day, hour, minute, second, nanosecond: nanosecond)
   end
 
-  private def canonical_digits(bytes : Pointer(UInt8), offset : Int32, count : Int32) : Int32
+  private def canonical_digits(bytes : Tape::String, offset : Int32, count : Int32) : Int32
     value = 0
     count.times do |index|
       digit = bytes[offset + index].to_i32 - '0'.ord

@@ -11,7 +11,7 @@ pub struct Clause
     valid = !sql.empty?
     index = 0
     while index < sql.bytesize
-      byte = sql.to_unsafe[index]
+      byte = sql.byte_at(index)
       letter = (byte >= 65 && byte <= 90) || (byte >= 97 && byte <= 122)
       allowed = letter || (index > 0 && ((byte >= 48 && byte <= 57) || byte == 95 || byte == 46 || byte == 44 || byte == 32))
       valid = false unless allowed

@@ -118,7 +118,7 @@ pub class KeyProvider
     pads = 0
     invalid = false
     encoded.bytesize.times do |i|
-      byte = encoded.to_unsafe[i]
+      byte = encoded.byte_at(i)
       if byte == 32 || (byte >= 9 && byte <= 13)
         next
       elsif byte == 61

@@ -2,7 +2,6 @@ module grant/adapter/pool_support
 
 import std/indexable
 import std/time::{Span, Time}
-import grant/cstring::{cstring}
 
 # Grant::Adapter::PoolSupport: the upstream conservative replay policy.
 pub MAX_BACKOFF = Span.seconds(5_i64)
@@ -16,17 +15,17 @@ pub def idempotent_read?(sql : String?) : Bool
   return false if sql.nil?
   start = 0
   while start < sql.bytesize
-    byte = sql.to_unsafe[start]
+    byte = sql.byte_at(start)
     break unless byte == 32 || (byte >= 9 && byte <= 13)
     start += 1
   end
   return false if start >= sql.bytesize
   size = sql.bytesize - start
-  head = cstring(sql.to_unsafe + start, size < 16 ? size : 16).downcase
+  head = sql[start, size < 16 ? size : 16].downcase
   if head.starts_with?("select") || head.starts_with?("show") || head.starts_with?("values")
     true
   elsif head.starts_with?("explain")
-    !cstring(sql.to_unsafe + start, size < 40 ? size : 40).downcase.includes?("analyze")
+    !sql[start, size < 40 ? size : 40].downcase.includes?("analyze")
   else
     false
   end
