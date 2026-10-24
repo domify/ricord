@@ -1,4 +1,4 @@
-module github.com/domify/grant
+module github.com/priit/grant
 
 require github.com/domify/db v0.1.1 as db
 require github.com/domify/sqlite v0.1.0 as sqlite

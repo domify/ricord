@@ -60,7 +60,7 @@ attributes, query cache, MySQL.
 Add Grant to your project's `ris.mod`:
 
 ```
-require github.com/domify/grant v0.0.0 as grant
+require github.com/priit/grant v0.0.0 as grant
 ```
 
 The modules live under `grant/` inside the package, so an import names the
