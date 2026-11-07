@@ -2,7 +2,7 @@
 module test/crud_test
 
 import db/db/spec::{describe, it}
-import ricord/failures::{RecordNotFound}
+import ricord/failures::{RecordNotFound, DatabaseError}
 import test/spec_helper::*
 import test/models::*
 
@@ -38,7 +38,7 @@ describe "crud" do
       narrower = base.where(name: "a")
       assert base.count.or_panic == 4_i64, "an earlier query keeps its own conditions"
       assert narrower.count.or_panic == 1_i64
-      assert db.statements.any?(&.includes?("\"rank\" IN (?, ?)"))
+      assert db.statements.any?(&.includes?("`rank` IN (?, ?)"))
     end
   end
 
@@ -65,7 +65,7 @@ describe "crud" do
       assert court.changed?
       court.save.or_panic
       assert !court.changed?
-      assert db.statements.any?(&.starts_with?("UPDATE \"courts\" SET \"name\" = ?"))
+      assert db.statements.any?(&.starts_with?("UPDATE `courts` SET `name` = ?"))
       assert Court[db].find(court.id).or_panic.name == "New"
       court.destroy.or_panic
       assert court.destroyed?
@@ -80,7 +80,7 @@ describe "crud" do
       assert court.destroy.or_panic.destroyed?
       assert !court.persisted?
       assert Court[db].find(court.id).is_a?(RecordNotFound)
-      assert db.statements.any?(&.starts_with?("DELETE FROM \"courts\" WHERE \"id\" = ?"))
+      assert db.statements.any?(&.starts_with?("DELETE FROM `courts` WHERE `id` = ?"))
       assert Court[db].find(kept.id).or_panic.name == "keep me", "only its own row goes"
     end
   end
@@ -130,6 +130,110 @@ describe "finders and destroyed records" do
       live.name = "still alive"
       live.save.or_panic
       assert Court[db].find(live.id).or_panic.name == "still alive"
+    end
+  end
+end
+
+# Ported from grant_query_builder, grant_query_implicit_order,
+# grant_query_existence_predicates and grant_query_query_regressions.
+describe "query building" do
+  it "chains where, or_where, raw conditions, order, limit and offset" do
+    with_db do |db|
+      Court.create(db, name: "a", rank: 23).or_panic
+      Court.create(db, name: "b", rank: 5).or_panic
+      Court.create(db, name: "c", rank: 23, active: false).or_panic
+      Court.create(db, name: "d").or_panic
+      assert Court[db].where(rank: 23).where(active: true).count.or_panic == 1_i64
+      assert Court[db].where(rank: 23).or_where(name: "b").count.or_panic == 3_i64
+      assert Court[db].where(rank: nil, name: ["d", "a"]).count.or_panic == 1_i64
+      assert db.statements.any?(&.includes?("`name` IN (?, ?) AND `rank` IS NULL"))
+      assert Court[db].where("name = ?", "a").where("rank = ?", 23).count.or_panic == 1_i64
+      ordered = Court[db].order(rank: :desc).order(name: :asc).to_a.or_panic.map(&.name)
+      assert ordered == ["a", "c", "b", "d"]
+      assert db.statements.any?(&.includes?("ORDER BY `rank` DESC, `name`"))
+      assert Court[db].order(:name).limit(2).offset(1).to_a.or_panic.map(&.name) == ["b", "c"]
+      assert db.statements.any?(&.includes?(" LIMIT 2 OFFSET 1"))
+    end
+  end
+
+  it "reads unordered unless asked, and orders first by id" do
+    with_db do |db|
+      ["c", "a", "b"].each { |n| Court.create(db, name: n).or_panic }
+      before = db.statements.size
+      assert Court[db].where("name != ?", "zzz").to_a.or_panic.size == 3
+      assert db.statements.size > before && !db.statements.last.includes?("ORDER BY"), "a plain read has no ORDER BY"
+      first = Court[db].first.or_panic
+      assert !first.nil? && first.name == "c"
+      assert db.statements.last.includes?("ORDER BY `id` LIMIT 1"), "first orders by id ascending"
+      raw_first = Court[db].where("name != ?", "zzz").first.or_panic
+      assert !raw_first.nil? && raw_first.name == "c"
+      by_name = Court[db].order(:name).first.or_panic
+      assert !by_name.nil? && by_name.name == "a", "an explicit order is kept"
+      by_name_desc = Court[db].order(name: :desc).first.or_panic
+      assert !by_name_desc.nil? && by_name_desc.name == "c"
+      assert db.statements.last.includes?("ORDER BY `name` DESC LIMIT 1"), "an explicit order is used as written"
+    end
+  end
+
+  it "answers exists? with LIMIT 1 and honors a limit" do
+    with_db do |db|
+      ["a", "b", "c"].each { |n| Court.create(db, name: n).or_panic }
+      assert !Court[db].where(name: "nope").exists?.or_panic
+      assert Court[db].where(name: "a").exists?.or_panic
+      assert Court[db].where("name != ?", "zzz").exists?.or_panic
+      assert db.statements.last.includes?("LIMIT 1")
+      assert !db.statements.last.includes?("ORDER BY")
+      assert Court[db].where("name != ?", "zzz").limit(1).exists?.or_panic
+    end
+  end
+
+  it "uses exclusive range ends and groups an OR range with AND" do
+    with_db do |db|
+      ["in1", "in2", "in3", "in4", "outside"].each_with_index { |n, i| Court.create(db, name: n, rank: i + 1).or_panic }
+      assert Court[db].where(rank: 1_i64...3_i64).order(:rank).to_a.or_panic.map(&.name) == ["in1", "in2"]
+      found = Court[db].where(name: "outside").or_where(rank: 2_i64...4_i64).order(:rank).to_a.or_panic.map(&.name)
+      assert found == ["in2", "in3", "outside"]
+      assert db.statements.any?(&.includes?(" OR (`rank` >= ? AND `rank` < ?)"))
+    end
+  end
+end
+
+# Ported from grant_public_api_return_types: the query API's static types.
+describe "public api return types" do
+  it "keeps the record, query and finder return types" do
+    with_db do |db|
+      assert typeof(Court[db]).to_s == Court::Query.to_s
+      assert typeof(Court[db].where(name: "a")).to_s == Court::Query.to_s
+      assert typeof(Court[db].where("name = ?", "a")).to_s == Court::Query.to_s
+      assert typeof(Court[db].order(:name).limit(1).offset(1)).to_s == Court::Query.to_s
+      assert typeof(Court[db].to_a).to_s == (Array(Court) | ::Ricord::Failures::DatabaseError).to_s
+      assert typeof(Court[db].first).to_s == (Court | Nil | ::Ricord::Failures::DatabaseError).to_s
+      assert typeof(Court[db].find_by(name: "a")).to_s == (Court | Nil | ::Ricord::Failures::DatabaseError).to_s
+      assert typeof(Court[db].find(1)).to_s == (Court | ::Ricord::Failures::RecordNotFound | ::Ricord::Failures::DatabaseError).to_s
+      assert typeof(Court[db].count).to_s == (Int64 | ::Ricord::Failures::DatabaseError).to_s
+      assert typeof(Court[db].exists?).to_s == (Bool | ::Ricord::Failures::DatabaseError).to_s
+      assert typeof(Court.new(db, name: "a")).to_s == Court.to_s
+      assert typeof(Court.create(db, name: "a")).to_s == (Court | ::Ricord::Failures::Error).to_s
+      assert typeof(Court.new(db, name: "b").reload).to_s == (Court | ::Ricord::Failures::Error).to_s
+    end
+  end
+
+  it "refuses save and destroy of a destroyed record" do
+    with_db do |db|
+      court = Court.create(db, name: "x").or_panic
+      court.destroy.or_panic
+      court.name = "y"
+      assert court.save.is_a?(DatabaseError)
+      assert court.destroy.is_a?(DatabaseError)
+      assert Court[db].count.or_panic == 0_i64
+    end
+  end
+
+  it "answers exists? with an offset" do
+    with_db do |db|
+      3.times { |i| Court.create(db, name: "c#{i}").or_panic }
+      assert Court[db].offset(2).exists?.or_panic
+      assert !Court[db].offset(3).exists?.or_panic
     end
   end
 end

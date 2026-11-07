@@ -30,7 +30,7 @@ pub abstract struct SqliteSql
   abstract def name : String
 
   def quote_ident(name : String, into : String::Builder) : Nil
-    into << '"' << name << '"'
+    into << '`' << name << '`'
     nil
   end
 
@@ -103,7 +103,7 @@ pub abstract struct SqliteSql
     unless options.references.empty?
       into << " REFERENCES "
       quote_ident(options.references, into)
-      into << "(\"id\")"
+      into << "(`id`)"
       case options.on_delete
       when :cascade  then into << " ON DELETE CASCADE"
       when :restrict then into << " ON DELETE RESTRICT"

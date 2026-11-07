@@ -84,7 +84,7 @@ pub def order_sql(store : Store, last : Int32, columns : Array(String), sql : St
   chain.reverse.each_with_index do |node_index, i|
     node = store.orders[node_index]
     sql << ", " if i > 0
-    sql << '"' << columns[node.column] << '"'
+    sql << '`' << columns[node.column] << '`'
     sql << " DESC" if node.desc
   end
   nil
@@ -108,7 +108,7 @@ pub def where_conds(store : Store, op : UInt8, last : Int32, conds : T) : Int32 
   conds.each do |key, value|
     next if value.is_a?(Skip)
     text << " AND " unless text.bytesize == 0
-    column = "\"#{key}\""
+    column = "`#{key}`"
     if value.nil?
       text << column << " IS NULL"
     elsif value.is_a?(Array)
@@ -233,12 +233,12 @@ pub macro model(name, &block)
       session = db.session
       d = session.dialect
       sql = String::Builder.new
-      sql << "CREATE TABLE IF NOT EXISTS \"" << TABLE << "\" (\"id\" "
+      sql << "CREATE TABLE IF NOT EXISTS `" << TABLE << "` (`id` "
       d.column_sql(:integer, ::Ricord::Dialects::ColumnOptions.new(primary: true), sql)
       {% for c in cols %}
         {% opts = {} of String => ASTNode %}
         {% if c.named_args %}{% for na in c.named_args %}{% opts[na.name.stringify] = na.value %}{% end %}{% end %}
-        sql << ", \"" << {{c.args[0].id.stringify}} << "\" "
+        sql << ", `" << {{c.args[0].id.stringify}} << "` "
         d.column_sql({{c.args[1]}}, ::Ricord::Dialects::ColumnOptions.new(
           null: {{opts["null"] ? opts["null"] : false}},
           {% if opts["limit"] %}limit: {{opts["limit"]}},{% end %}
@@ -252,7 +252,7 @@ pub macro model(name, &block)
       {% for ix in indexes %}
         {% icols = ix.args[0].is_a?(ArrayLiteral) ? ix.args[0] : [ix.args[0]] %}
         {% unique = ix.named_args && ix.named_args.any? { |na| na.name.stringify == "unique" && na.value } %}
-        session.run("CREATE #{ {{unique ? true : false}} ? "UNIQUE " : "" }INDEX IF NOT EXISTS \"index_{{table.id}}_on_{{icols.map(&.id).join("_").id}}\" ON \"{{table.id}}\" (\"{{icols.map(&.id).join("\", \"").id}}\")")!
+        session.run("CREATE #{ {{unique ? true : false}} ? "UNIQUE " : "" }INDEX IF NOT EXISTS `index_{{table.id}}_on_{{icols.map(&.id).join("_").id}}` ON `{{table.id}}` (`{{icols.map(&.id).join("`, `").id}}`)")!
       {% end %}
       nil
     end
@@ -387,6 +387,7 @@ pub macro model(name, &block)
 
     # INSERT or UPDATE of the changed columns, in its own write unless inside one.
     def save : self | ::Ricord::Failures::Error
+      return ::Ricord::Failures::DatabaseError.new(TABLE, "save", "record #{id} is destroyed") if destroyed?
       record = self
       result = session.write { |tx| record.save_in(tx) }
       return result if result.is_a?(::Ricord::Failures::Failure)
@@ -406,11 +407,11 @@ pub macro model(name, &block)
             names << ", "
             marks << ", "
           end
-          names << '"' << COLUMNS[col] << '"'
+          names << '`' << COLUMNS[col] << '`'
           marks << (BLOB_COLUMNS[col] ? "unhex(?)" : "?")
           ::Ricord::Model.push_db(args, store.slot(index, col), store, d)
         end
-        sql << "INSERT INTO \"" << TABLE << '"'
+        sql << "INSERT INTO `" << TABLE << '`'
         if names.empty?
           sql << " DEFAULT VALUES"
         else
@@ -426,12 +427,12 @@ pub macro model(name, &block)
         (1...COLUMNS.size).each do |col|
           next unless store.changed?(index, col)
           sets << ", " unless sets.empty?
-          sets << '"' << COLUMNS[col] << (BLOB_COLUMNS[col] ? "\" = unhex(?)" : "\" = ?")
+          sets << '`' << COLUMNS[col] << (BLOB_COLUMNS[col] ? "` = unhex(?)" : "` = ?")
           ::Ricord::Model.push_db(args, store.slot(index, col), store, d)
         end
         unless sets.empty?
           args << id
-          sql << "UPDATE \"" << TABLE << "\" SET " << sets << " WHERE \"id\" = ?"
+          sql << "UPDATE `" << TABLE << "` SET " << sets << " WHERE `id` = ?"
           session.run(sql.to_s, args)!
         end
       end
@@ -440,8 +441,9 @@ pub macro model(name, &block)
     end
 
     def destroy : self | ::Ricord::Failures::Error
+      return ::Ricord::Failures::DatabaseError.new(TABLE, "destroy", "record #{id} is destroyed") if destroyed?
       record = self
-      result = session.write { |tx| tx.exec("DELETE FROM \"#{TABLE}\" WHERE \"id\" = ?", [record.id.as(::Db::Value::DBValue)]) }
+      result = session.write { |tx| tx.exec("DELETE FROM `#{TABLE}` WHERE `id` = ?", [record.id.as(::Db::Value::DBValue)]) }
       return result if result.is_a?(::Ricord::Failures::Failure)
       store.set_flag(index, ::Ricord::Storage::FLAG_DESTROYED, true)
       self
@@ -449,7 +451,7 @@ pub macro model(name, &block)
 
     def reload : self | ::Ricord::Failures::Error
       record = self
-      found = session.query("SELECT #{COLUMNS.map { |c| "\"#{c}\"" }.join(", ")} FROM \"#{TABLE}\" WHERE \"id\" = ?", [id.as(::Db::Value::DBValue)]) do |rs|
+      found = session.query("SELECT #{COLUMNS.map { |c| "`#{c}`" }.join(", ")} FROM `#{TABLE}` WHERE `id` = ?", [id.as(::Db::Value::DBValue)]) do |rs|
         m = ::Ricord::Model.advance(rs, TABLE)
         if m.is_a?(::Ricord::Failures::DatabaseError)
           m
@@ -542,7 +544,7 @@ pub macro model(name, &block)
       end
 
       def build(selection : String, sql : String::Builder, args : Array(::Db::Value::DBValue)) : Nil
-        sql << "SELECT " << selection << " FROM \"" << TABLE << '"'
+        sql << "SELECT " << selection << " FROM `" << TABLE << '`'
         ::Ricord::Model.where_sql(session.store, @last_where, sql, args, session.dialect)
         ::Ricord::Model.order_sql(session.store, @last_order, COLUMNS, sql)
         session.dialect.limit_offset(@limit_value, @offset_value, sql)
@@ -552,7 +554,7 @@ pub macro model(name, &block)
       def to_a : Array({{name.id}}) | ::Ricord::Failures::DatabaseError
         sql = String::Builder.new
         args = [] of ::Db::Value::DBValue
-        build(COLUMNS.map { |c| "\"#{c}\"" }.join(", "), sql, args)
+        build(COLUMNS.map { |c| "`#{c}`" }.join(", "), sql, args)
         s = session
         records = [] of {{name.id}}
         failed = s.query(sql.to_s, args) do |rs|
@@ -585,7 +587,7 @@ pub macro model(name, &block)
         query = query.limit(1)
         sql = String::Builder.new
         args = [] of ::Db::Value::DBValue
-        query.build(COLUMNS.map { |c| "\"#{c}\"" }.join(", "), sql, args)
+        query.build(COLUMNS.map { |c| "`#{c}`" }.join(", "), sql, args)
         s = session
         s.query(sql.to_s, args) do |rs|
           m = ::Ricord::Model.advance(rs, TABLE)
@@ -625,10 +627,16 @@ pub macro model(name, &block)
         session.scalar(sql.to_s, Int64, args)
       end
 
+      # Whether a row matches: `SELECT 1 ... LIMIT 1` (an offset applies), so it
+      # also works where `count` would return no row.
       def exists? : Bool | ::Ricord::Failures::DatabaseError
-        found = limit(1).count
-        return found if found.is_a?(::Ricord::Failures::DatabaseError)
-        found > 0
+        sql = String::Builder.new
+        args = [] of ::Db::Value::DBValue
+        limit(1).build("1", sql, args)
+        session.query(sql.to_s, args) do |rs|
+          m = ::Ricord::Model.advance(rs, TABLE)
+          m.is_a?(::Ricord::Failures::DatabaseError) ? m : m
+        end
       end
 
       def new(**attrs) : {{name.id}}

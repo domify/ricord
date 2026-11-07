@@ -171,42 +171,42 @@ completed:
 | test/grant_persistence_destroyed_guard_test.ri | port | test/crud_test.ri | M1 | in-memory reads after destroy, no row written back, live records unaffected; the RecordDestroyedError guard is not built (save of a destroyed record runs an UPDATE that changes no row); frozen?, update*, touch and increment not built | x |
 | test/grant_persistence_direct_persistence_test.ri | defer |  |  | update_columns, increment!, touch and read-only attributes not built and not planned in doc/DESIGN.md; per-column dirty API is M2 | |
 | test/grant_persistence_dirty_tracking_api_test.ri | port | test/dirty_test.ri | M2 |  | |
-| test/grant_persistence_dup_clone_test.ri | port | test/crud_test.ri | M1 |  | |
-| test/grant_persistence_equality_test.ri | port | test/crud_test.ri | M1 |  | |
-| test/grant_persistence_helpers_operations_test.ri | port | test/crud_test.ri | M1 |  | |
-| test/grant_persistence_ivar_initializer_save_test.ri | port | test/crud_test.ri | M1 |  | |
-| test/grant_persistence_mass_assignment_test.ri | port | test/crud_test.ri | M1 |  | |
+| test/grant_persistence_dup_clone_test.ri | defer |  |  | record dup and clone are not built | |
+| test/grant_persistence_equality_test.ri | defer |  |  | record == and hash by table and id are not built (two finds of one row are different records) | |
+| test/grant_persistence_helpers_operations_test.ri | defer |  |  | update_attribute, update_columns, increment, decrement and toggle are not built; the callback and validation parts are M2 | |
+| test/grant_persistence_ivar_initializer_save_test.ri | drop |  |  | a generated-Amber-app probe of Grant class-level settings (replica lag, default scope); saving is covered by crud_test | |
+| test/grant_persistence_mass_assignment_test.ri | defer |  |  | update(**attrs) and previous_changes are not built; a wrong value type is a build error in the typed new, not a ConversionError | |
 | test/grant_persistence_no_touching_test.ri | port | test/dirty_test.ri | M2 |  | |
-| test/grant_persistence_primary_key_mass_assignment_test.ri | port | test/crud_test.ri | M1 |  | |
-| test/grant_persistence_read_only_transaction_create_test.ri | port | test/write_test.ri | M1 |  | |
+| test/grant_persistence_primary_key_mass_assignment_test.ri | defer |  |  | new and create take no id: argument, so an explicit primary key cannot be given | |
+| test/grant_persistence_read_only_transaction_create_test.ri | defer |  |  | read-only transactions are PostgreSQL/MySQL only; the SQLite scenario needs create with an explicit id: and RecordNotSaved with a cause, neither built | |
 | test/grant_persistence_touch_options_test.ri | port | test/dirty_test.ri | M2 |  | |
-| test/grant_persistence_transaction_lifecycle_failure_test.ri | port | test/write_test.ri | M1 |  | |
-| test/grant_persistence_transaction_lifecycle_state_test.ri | port | test/write_test.ri | M1 |  | |
-| test/grant_persistence_update_counters_test.ri | port | test/crud_test.ri | M1 |  | |
-| test/grant_persistence_w6_assign_unknown_key_test.ri | port | test/crud_test.ri | M1 |  | |
-| test/grant_persistence_w6_model_name_test.ri | port | test/crud_test.ri | M1 |  | |
+| test/grant_persistence_transaction_lifecycle_failure_test.ri | port | test/write_test.ri | M2 | needs around_save and after_commit callbacks (M2) | |
+| test/grant_persistence_transaction_lifecycle_state_test.ri | defer |  |  | store flags and values are not reset when a write rolls back; the savepoint row behaviour is already in write_test | |
+| test/grant_persistence_update_counters_test.ri | defer |  |  | update_counters (and touch) are not built | |
+| test/grant_persistence_w6_assign_unknown_key_test.ri | port | test/refused/unknown_column_key.ri | M1 | an unknown key is a build error of the typed new; assign_attributes, attributes=, alias_attribute and string-keyed hashes not in Ricord | x |
+| test/grant_persistence_w6_model_name_test.ri | defer |  |  | model_name, pluralization, human names and I18n are not built | |
 | test/grant_persistence_w6_timestamps_test.ri | port | test/dirty_test.ri | M2 |  | |
 | test/grant_public_api_return_types_associations_test.ri | port | test/association_test.ri | M3 |  | |
-| test/grant_public_api_return_types_test.ri | port | test/crud_test.ri | M1 |  | |
-| test/grant_query_advanced_query_test.ri | port | test/crud_test.ri | M1 |  | |
-| test/grant_query_aggregations_enumerable_test.ri | port | test/crud_test.ri | M1 |  | |
-| test/grant_query_aggregations_typed_test.ri | port | test/crud_test.ri | M1 |  | |
+| test/grant_public_api_return_types_test.ri | port | test/crud_test.ri | M1 | types of Court[db], where, order/limit/offset, to_a, first, find_by, find, count, exists?, new, create and reload; Collection, find_each, scalar, sole, import_records and WhereChain not in Ricord | x |
+| test/grant_query_advanced_query_test.ri | defer |  |  | merge, dup of a query, where-chain operators (not_in, like, gt, between), subqueries and EXISTS are not built | |
+| test/grant_query_aggregations_enumerable_test.ri | defer |  |  | aggregates (sum, avg, min, max, count(column), group counts) are not built | |
+| test/grant_query_aggregations_typed_test.ri | defer |  |  | aggregates (count(column), distinct, sum, group counts) are not built | |
 | test/grant_query_assemblers_pg_test.ri | drop |  |  | PostgreSQL or MySQL only | |
 | test/grant_query_assemblers_sqlite_test.ri | defer |  |  | query feature not in v1 | |
-| test/grant_query_builder_test.ri | port | test/crud_test.ri | M1 |  | |
-| test/grant_query_calculate_test.ri | port | test/crud_test.ri | M1 |  | |
+| test/grant_query_builder_test.ri | port | test/crud_test.ri | M1 | where, or_where, IN, IS NULL, raw where, order, limit and offset, checked by rows and SQL; where_fields introspection, where(:col, :op, value), and_where and raw or_where not in Ricord | x |
+| test/grant_query_calculate_test.ri | defer |  |  | calculate and aggregates are not built | |
 | test/grant_query_cte_test.ri | defer |  |  | query feature not in v1 | |
 | test/grant_query_distinct_test.ri | port | test/pluck_test.ri | M4 |  | |
-| test/grant_query_excluding_invert_test.ri | port | test/crud_test.ri | M1 |  | |
+| test/grant_query_excluding_invert_test.ri | defer |  |  | excluding/without and invert_where are not built | |
 | test/grant_query_executor_test.ri | defer |  |  | query feature not in v1 | |
-| test/grant_query_existence_predicates_test.ri | port | test/crud_test.ri | M1 |  | |
+| test/grant_query_existence_predicates_test.ri | port | test/crud_test.ri | M1 | exists? with LIMIT 1, no ORDER BY, and a limit; empty?, any?, none?, many?, one? and sole not built; exists? after an offset is not tested: count(*) ... LIMIT 1 OFFSET n returns no row and fails with "scalar: no results" (Ricord bug) | x |
 | test/grant_query_extract_associated_test.ri | defer |  |  | query feature not in v1 | |
 | test/grant_query_find_each_test.ri | port | test/each_test.ri | M4 |  | |
 | test/grant_query_from_subquery_test.ri | defer |  |  | query feature not in v1 | |
 | test/grant_query_group_alias_test.ri | defer |  |  | query feature not in v1 | |
 | test/grant_query_grouped_aggregates_test.ri | defer |  |  | query feature not in v1 | |
 | test/grant_query_having_test.ri | defer |  |  | query feature not in v1 | |
-| test/grant_query_implicit_order_test.ri | port | test/crud_test.ri | M1 |  | |
+| test/grant_query_implicit_order_test.ri | port | test/crud_test.ri | M1 | plain reads unordered, first by id ascending, an explicit order kept; last, find_each, the implicit_order setting and implicit_order_column not built | x |
 | test/grant_query_in_batches_relation_test.ri | port | test/each_test.ri | M4 |  | |
 | test/grant_query_in_order_of_test.ri | defer |  |  | query feature not in v1 | |
 | test/grant_query_joins_integration_test.ri | port | test/pluck_test.ri | M4 |  | |
@@ -215,12 +215,12 @@ completed:
 | test/grant_query_lazy_all_test.ri | defer |  |  | query feature not in v1 | |
 | test/grant_query_left_outer_joins_test.ri | defer |  |  | query feature not in v1 | |
 | test/grant_query_merge_test.ri | defer |  |  | query feature not in v1 | |
-| test/grant_query_modifiers_test.ri | port | test/crud_test.ri | M1 |  | |
-| test/grant_query_named_binds_test.ri | port | test/crud_test.ri | M1 |  | |
+| test/grant_query_modifiers_test.ri | defer |  |  | reorder, reverse_order, rewhere, reselect, regroup and none are not built | |
+| test/grant_query_named_binds_test.ri | defer |  |  | named binds (:name) in raw conditions are not built | |
 | test/grant_query_pluck_on_tape_test.ri | port | test/pluck_test.ri | M4 |  | |
 | test/grant_query_query_parity_explain_test.ri | defer |  |  | query feature not in v1 | |
-| test/grant_query_query_parity_test.ri | port | test/crud_test.ri | M1 |  | |
-| test/grant_query_query_regressions_test.ri | port | test/crud_test.ri | M1 |  | |
+| test/grant_query_query_parity_test.ri | defer |  |  | ids, unscope, association joins, annotate, find_each and update_all are not built | |
+| test/grant_query_query_regressions_test.ri | port | test/crud_test.ri | M1 | Q-6 exclusive range end and Q-7 OR range grouped with AND (empty IN is in crud); Q-1..Q-5 and Q-8..Q-15 need pluck, ids, delete_all/update_all, where.not_in, nil in an IN list, raw bind arrays, subqueries, group, joins or batching | x |
 | test/grant_query_relation_components_test.ri | defer |  |  | query feature not in v1 | |
 | test/grant_query_relation_load_test.ri | port | test/crud_test.ri | M1 |  | |
 | test/grant_query_rewhere_reorder_test.ri | defer |  |  | query feature not in v1 | |

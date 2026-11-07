@@ -1,0 +1,13 @@
+# expect: no overload matches 'Test::Models::Court.new' with types Ricord::Sessions::Session, name: String, bogus: Int32
+# Ported from grant_persistence_w6_assign_unknown_key: a key that names no column
+# is refused when the program is built, so nothing can be assigned.
+module test/refused/unknown_column_key
+
+import ricord
+import test/spec_helper::*
+import test/models::*
+
+with_db do |db|
+  Court.new(db, name: "x", bogus: 1)
+  nil
+end
