@@ -1,0 +1,60 @@
+# M1: db.write commits, a failure or tx.roll_back rolls back, a nested write is a
+# savepoint, a lone save opens its own write, and Court[tx] sees uncommitted rows.
+module test/write_test
+
+import db/db/spec::{describe, it}
+import ricord/failures::{Rollback, RecordNotFound}
+import test/spec_helper::*
+import test/models::*
+
+describe "write" do
+  it "commits" do
+    with_db do |db|
+      db.write { |tx| Court.create(tx, name: "a").or_panic; nil }.or_panic
+      assert Court[db].count.or_panic == 1_i64
+      assert db.statements.includes?("BEGIN IMMEDIATE")
+      assert db.statements.includes?("COMMIT")
+    end
+  end
+
+  it "rolls back on tx.roll_back and on a failure" do
+    with_db do |db|
+      result = db.write do |tx|
+        Court.create(tx, name: "a").or_panic
+        tx.roll_back
+      end
+      assert result.is_a?(Rollback)
+      failed = db.write do |tx|
+        Court.create(tx, name: "b").or_panic
+        found = Court[tx].find(99)
+        found.is_a?(RecordNotFound) ? found : nil
+      end
+      assert failed.is_a?(RecordNotFound)
+      assert Court[db].count.or_panic == 0_i64
+    end
+  end
+
+  it "keeps the outer rows when a nested write rolls back" do
+    with_db do |db|
+      db.write do |tx|
+        Court.create(tx, name: "outer").or_panic
+        inner = tx.write do |inner_tx|
+          Court.create(inner_tx, name: "inner").or_panic
+          inner_tx.roll_back
+        end
+        assert inner.is_a?(Rollback)
+        assert Court[tx].count.or_panic == 1_i64, "the write sees its own uncommitted row"
+        nil
+      end.or_panic
+      assert Court[db].order(:name).to_a.or_panic.map(&.name) == ["outer"]
+      assert db.statements.any?(&.starts_with?("ROLLBACK TO ricord_"))
+    end
+  end
+
+  it "opens a write for a lone save" do
+    with_db do |db|
+      Court.create(db, name: "a").or_panic
+      assert db.statements.includes?("BEGIN IMMEDIATE")
+    end
+  end
+end

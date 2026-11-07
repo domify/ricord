@@ -1,0 +1,160 @@
+# A session's records, flat: one owner holding every record's slots, text and
+# flags in arrays, so a record is a struct with an index (doc/DESIGN.md, M1
+# item 3). Text bytes are appended and never reclaimed while the store lives.
+module ricord/storage
+
+import std/int
+import std/time::{Time}
+import std/slice::{Bytes}
+import ricord/values::{Value, ByteSpan, TextSpan}
+
+# A query condition: a node in a persistent list. A query holds the index of its
+# last node; a chained call appends a node pointing at it.
+@[Tape::Flat]
+pub struct WhereNode
+  getter prev : Int32
+  getter op : UInt8
+  getter sql : TextSpan
+  getter bind_start : Int32
+  getter bind_count : Int32
+
+  def initialize(@prev : Int32, @op : UInt8, @sql : TextSpan, @bind_start : Int32, @bind_count : Int32)
+  end
+end
+
+@[Tape::Flat]
+pub struct OrderNode
+  getter prev : Int32
+  getter column : Int32
+  getter desc : Bool
+
+  def initialize(@prev : Int32, @column : Int32, @desc : Bool)
+  end
+end
+
+@[Tape::Flat]
+pub struct ErrorEntry
+  getter record : Int32
+  getter column : Int32
+  getter message : TextSpan
+
+  def initialize(@record : Int32, @column : Int32, @message : TextSpan)
+  end
+end
+
+pub FLAG_PERSISTED = 0
+pub FLAG_DESTROYED = 1
+pub FLAG_GROUP     = 2
+
+pub class Store
+  getter models = [] of Int32
+  getter starts = [] of Int32
+  getter values = [] of Value
+  getter text = String::Builder.new
+  getter bytes = [] of UInt8
+  getter changed = [] of Bool
+  getter flags = [] of UInt8
+  getter scopes = [] of Int32
+  getter groups = [] of Int32
+  getter link_starts = [] of Int32
+  getter link_ranges = [] of Int32
+  getter links = [] of Int32
+  getter errors = [] of ErrorEntry
+  getter wheres = [] of WhereNode
+  getter binds = [] of Value
+  getter orders = [] of OrderNode
+  getter joins = [] of Int32
+
+  # A new record of *model* with *columns* nil slots; its index.
+  def add_record(model : Int32, columns : Int32, associations : Int32) : Int32
+    @models << model
+    @starts << @values.size
+    columns.times do
+      @values << nil
+      @changed << false
+    end
+    @flags << 0_u8
+    @scopes << -1
+    @groups << -1
+    @link_starts << @link_ranges.size
+    (associations * 2).times { @link_ranges << -1 }
+    @models.size - 1
+  end
+
+  def size : Int32
+    @models.size
+  end
+
+  def slot(index : Int32, col : Int32) : Value
+    @values[@starts[index] + col]
+  end
+
+  # Sets a slot from a database read: not marked changed.
+  def load_slot(index : Int32, col : Int32, value : Value) : Nil
+    @values[@starts[index] + col] = value
+  end
+
+  def set_slot(index : Int32, col : Int32, value : Value) : Nil
+    at = @starts[index] + col
+    @values[at] = value
+    @changed[at] = true
+  end
+
+  def changed?(index : Int32, col : Int32) : Bool
+    @changed[@starts[index] + col]
+  end
+
+  def clear_changed(index : Int32, columns : Int32) : Nil
+    columns.times { |col| @changed[@starts[index] + col] = false }
+  end
+
+  # The text of a text slot, a view of `text`; "" when the slot is not text.
+  def text(index : Int32, col : Int32) : String
+    value = slot(index, col)
+    value.is_a?(TextSpan) ? @text.to_s[value.start, value.size] : ""
+  end
+
+  def span_text(span : TextSpan) : String
+    @text.to_s[span.start, span.size]
+  end
+
+  # Appends *value* to `text` and returns its span.
+  def add_text(value : String) : TextSpan
+    start = @text.bytesize
+    @text << value
+    TextSpan.new(start, value.bytesize)
+  end
+
+  def set_text(index : Int32, col : Int32, value : String) : Nil
+    set_slot(index, col, add_text(value))
+  end
+
+  def add_bytes(value : Bytes) : ByteSpan
+    start = @bytes.size
+    value.each { |b| @bytes << b }
+    ByteSpan.new(start, value.size)
+  end
+
+  def flag?(index : Int32, bit : Int32) : Bool
+    (@flags[index] & (1_u8 << bit)) != 0_u8
+  end
+
+  def set_flag(index : Int32, bit : Int32, on : Bool) : Nil
+    @flags[index] = on ? (@flags[index] | (1_u8 << bit)) : (@flags[index] & ~(1_u8 << bit))
+  end
+
+  def add_where(prev : Int32, op : UInt8, sql : String, bind_start : Int32, bind_count : Int32) : Int32
+    @wheres << WhereNode.new(prev, op, add_text(sql), bind_start, bind_count)
+    @wheres.size - 1
+  end
+
+  def add_bind(value : Value) : Int32
+    @binds << value
+    @binds.size - 1
+  end
+
+  def add_order(prev : Int32, column : Int32, desc : Bool) : Int32
+    @orders << OrderNode.new(prev, column, desc)
+    @orders.size - 1
+  end
+end

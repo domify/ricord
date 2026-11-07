@@ -1,3 +1,31 @@
-# Ricord: records over SQLite and Turso for ris, one session per block.
-# The design is doc/DESIGN.md; M1 adds the session, store and model macro.
+# Ricord: records over SQLite and Turso for ris, one session per block
+# (doc/DESIGN.md).
 module ricord
+
+pub import ricord/values
+pub import ricord/failures
+pub import ricord/storage
+pub import ricord/dialects
+pub import ricord/sessions
+
+import db/db/db
+import db/db/errors::{DBError}
+import sqlite/sqlite/core
+import ricord/storage::{Store}
+import ricord/sessions::{Session, TxState, dialect_for}
+
+# Opens *uri* for the block: `sqlite3:` or `turso:` (the latter needs
+# `import sqlite/sqlite/turso` in the program). A failure to open is the
+# driver's `DBError`.
+pub def open(uri : String, log : Bool = false, & : Session -> U) : U | DBError forall U
+  dialect = dialect_for(uri)
+  ::Db::Db.open(uri) do |conn|
+    store = Store.new
+    state = TxState.new
+    session = Session.new(conn, store, dialect, state, log)
+    dialect.pragmas.each { |pragma| session.run(pragma) }
+    value = yield session
+    session.release
+    value
+  end
+end

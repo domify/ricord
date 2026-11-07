@@ -1,0 +1,19 @@
+# M1: text read in one query stays correct after later queries.
+module test/lifetime_test
+
+import db/db/spec::{describe, it}
+import test/spec_helper::*
+import test/models::*
+
+describe "lifetime" do
+  it "keeps text after later queries" do
+    with_db do |db|
+      100.times { |i| Court.create(db, name: "court #{i}").or_panic }
+      first = Court[db].order(:id).limit(10).to_a.or_panic
+      Court[db].order(name: :desc).to_a.or_panic
+      Court[db].where(name: "court 99").to_a.or_panic
+      assert first[0].name == "court 0"
+      assert first[9].name == "court 9"
+    end
+  end
+end

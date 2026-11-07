@@ -1,0 +1,614 @@
+# `model Court do ... end`: a record type over a session's store, its query type,
+# and its table's DDL (doc/DESIGN.md, M1 item 8). Column 0 is always `id`.
+#
+#     model Court do
+#       table :courts
+#       col :name, :string
+#       col :rank, :integer, null: true
+#     end
+module ricord/model
+
+import std/int
+import std/tuple
+import std/named_tuple
+import std/time::{Time}
+import db/db/core::{ResultSet}
+import db/db/errors::{DBError}
+import db/db/value::{DBValue}
+import ricord/values::{Value, Skip, SKIP, TextSpan}
+import ricord/storage::{Store, FLAG_PERSISTED, FLAG_DESTROYED}
+import ricord/dialects::{Dialect, ColumnOptions}
+import ricord/failures::{RecordNotFound, DatabaseError, Failure}
+import ricord/sessions::{Session, Tx, Db}
+
+# The value of a store slot as a bind argument.
+pub def to_db(value : Value, store : Store, dialect : Dialect) : DBValue
+  case value
+  when TextSpan then store.span_text(value)
+  when Time         then dialect.write_time(value)
+  when Nil, Bool, Int64, Float64
+    value
+  else
+    nil
+  end
+end
+
+# The WHERE text and binds of a node chain ending at *last*, appended.
+pub def where_sql(store : Store, last : Int32, sql : String::Builder, binds : Array(DBValue), dialect : Dialect) : Nil
+  return nil if last < 0
+  chain = [] of Int32
+  at = last
+  while at >= 0
+    chain << at
+    at = store.wheres[at].prev
+  end
+  ordered = chain.reverse
+  sql << " WHERE "
+  ordered.each_with_index { |node_index, i| sql << '(' if i > 0 && store.wheres[node_index].op == 1_u8 }
+  ordered.each_with_index do |node_index, i|
+    node = store.wheres[node_index]
+    if i == 0
+      sql << '('
+    elsif node.op == 1_u8
+      sql << ") OR ("
+    else
+      sql << " AND ("
+    end
+    sql << store.span_text(node.sql) << ')'
+    node.bind_count.times { |b| binds << to_db(store.binds[node.bind_start + b], store, dialect) }
+  end
+  nil
+end
+
+# The next row, or the database's refusal as a `DatabaseError` (a constraint
+# failing on a `RETURNING` insert shows up here).
+pub def advance(rs : ResultSet, table : String) : Bool | DatabaseError
+  moved = rs.move_next
+  moved.is_a?(::Db::Errors::DBError) ? DatabaseError.from(moved, table, "query") : moved
+end
+
+# The ORDER BY text of an order chain ending at *last*.
+pub def order_sql(store : Store, last : Int32, columns : Array(String), sql : String::Builder) : Nil
+  return nil if last < 0
+  chain = [] of Int32
+  at = last
+  while at >= 0
+    chain << at
+    at = store.orders[at].prev
+  end
+  sql << " ORDER BY "
+  chain.reverse.each_with_index do |node_index, i|
+    node = store.orders[node_index]
+    sql << ", " if i > 0
+    sql << '"' << columns[node.column] << '"'
+    sql << " DESC" if node.desc
+  end
+  nil
+end
+
+# A store value for a `where` argument: text goes into the store.
+pub def bind_value(store : Store, value : T) : Value forall T
+  case value
+  when String then store.add_text(value)
+  when Int32  then value.to_i64
+  else             value
+  end
+end
+
+# Appends a node for the conditions in *conds* (a NamedTuple of column => value,
+# `SKIP` for not given) and returns it, or *last* when none was given.
+pub def where_conds(store : Store, op : UInt8, last : Int32, conds : T) : Int32 forall T
+  text = String::Builder.new
+  start = store.binds.size
+  count = 0
+  conds.each do |key, value|
+    next if value.is_a?(Skip)
+    text << " AND " unless text.bytesize == 0
+    column = "\"#{key}\""
+    if value.nil?
+      text << column << " IS NULL"
+    elsif value.is_a?(Array)
+      if value.empty?
+        text << "1=0"
+      else
+        text << column << " IN ("
+        value.each_with_index do |item, k|
+          text << (k > 0 ? ", ?" : "?")
+          store.add_bind(bind_value(store, item))
+          count += 1
+        end
+        text << ')'
+      end
+    elsif value.is_a?(Range)
+      text << column << " >= ? AND " << column << (value.exclusive? ? " < ?" : " <= ?")
+      store.add_bind(bind_value(store, value.begin))
+      store.add_bind(bind_value(store, value.end))
+      count += 2
+    else
+      text << column << " = ?"
+      store.add_bind(bind_value(store, value))
+      count += 1
+    end
+  end
+  return last if text.bytesize == 0
+  store.add_where(last, op, text.to_s, start, count)
+end
+
+# Appends a raw condition with its binds and returns its node.
+pub def where_raw(store : Store, last : Int32, sql : String, binds : T) : Int32 forall T
+  start = store.binds.size
+  binds.each { |b| store.add_bind(bind_value(store, b)) }
+  store.add_where(last, 0_u8, sql, start, binds.size)
+end
+
+# Appends ascending order nodes for *cols* (Symbols) and returns the last.
+pub def order_cols(store : Store, last : Int32, columns : Array(String), cols : T) : Int32 forall T
+  cols.each { |c| last = store.add_order(last, column_of(columns, c.to_s), false) }
+  last
+end
+
+# Appends order nodes for a NamedTuple of column => :asc / :desc.
+pub def order_dirs(store : Store, last : Int32, columns : Array(String), cols : T) : Int32 forall T
+  cols.each { |c, dir| last = store.add_order(last, column_of(columns, c.to_s), dir == :desc) }
+  last
+end
+
+private def column_of(columns : Array(String), name : String) : Int32
+  columns.each_with_index { |c, i| return i if c == name }
+  0
+end
+
+pub macro model(name, &block)
+  {% declarations = block.body.is_a?(Expressions) ? block.body.expressions : [block.body] %}
+  {% exprs = [] of ASTNode %}
+  {% for declaration in declarations %}
+    {% node = declaration.is_a?(Assign) ? declaration.value : declaration %}
+    {% if node.is_a?(Expressions) %}
+      {% for inner in node.expressions %}
+        {% exprs << (inner.is_a?(Assign) ? inner.value : inner) %}
+      {% end %}
+    {% else %}
+      {% exprs << node %}
+    {% end %}
+  {% end %}
+  {% table = name.stringify.underscore + "s" %}
+  {% cols = [] of ASTNode %}
+  {% defs = [] of ASTNode %}
+  {% indexes = [] of ASTNode %}
+  {% for e in exprs %}
+    {% if e.is_a?(Call) && e.name == "table" %}
+      {% arg = e.args[0] %}
+      {% table = arg.is_a?(StringLiteral) ? arg : (arg.is_a?(SymbolLiteral) ? arg.id.stringify : (arg.is_a?(Call) && arg.name == "view" ? arg.args[0] : arg.stringify)) %}
+    {% elsif e.is_a?(Call) && e.name == "col" %}
+      {% cols << e %}
+    {% elsif e.is_a?(Call) && e.name == "index" %}
+      {% indexes << e %}
+    {% elsif e.is_a?(Def) %}
+      {% defs << e %}
+    {% elsif e.stringify.starts_with?("__") || e.stringify.starts_with?("::__") || e.is_a?(Nop) || e.is_a?(BoolLiteral) %}
+    {% else %}
+      {% raise "model #{name}: unknown declaration #{e}" %}
+    {% end %}
+  {% end %}
+  {% types = {"string" => "String", "text" => "String", "integer" => "Int64", "bigint" => "Int64", "references" => "Int64", "float" => "Float64", "boolean" => "Bool", "datetime" => "::Std::Time::Time", "time" => "::Std::Time::Time"} %}
+  {% for c in cols %}
+    {% unless types[c.args[1].id.stringify] %}
+      {% raise "model #{name}: column #{c.args[0]} has unknown type #{c.args[1]}" %}
+    {% end %}
+    {% if c.named_args %}
+      {% for na in c.named_args %}
+        {% unless ["null", "default", "limit", "to", "on_delete"].includes?(na.name.stringify) %}
+          {% raise "model #{name}: column #{c.args[0]} has unknown option #{na.name}" %}
+        {% end %}
+      {% end %}
+    {% end %}
+  {% end %}
+
+  @[OnTape]
+  pub struct {{name.id}}
+    getter session : ::Ricord::Sessions::Session
+    getter store : ::Ricord::Storage::Store
+    getter index : Int32
+
+    TABLE = {{table}}
+    PRIMARY = "id"
+    COLUMNS = ["id", {% for c in cols %}{{c.args[0].id.stringify}}, {% end %}]
+    MODEL_ID = 0
+
+    def initialize(@session : ::Ricord::Sessions::Session, @store : ::Ricord::Storage::Store, @index : Int32)
+    end
+
+    def self.[](db : ::Ricord::Sessions::Db) : Query
+      Query.new(db.session, -1, -1, nil, nil)
+    end
+
+    # Creates the table and its indexes if missing.
+    def self.create_table(db : ::Ricord::Sessions::Db) : Nil | ::Ricord::Failures::DatabaseError
+      session = db.session
+      d = session.dialect
+      sql = String::Builder.new
+      sql << "CREATE TABLE IF NOT EXISTS \"" << TABLE << "\" (\"id\" "
+      d.column_sql(:integer, ::Ricord::Dialects::ColumnOptions.new(primary: true), sql)
+      {% for c in cols %}
+        {% opts = {} of String => ASTNode %}
+        {% if c.named_args %}{% for na in c.named_args %}{% opts[na.name.stringify] = na.value %}{% end %}{% end %}
+        sql << ", \"" << {{c.args[0].id.stringify}} << "\" "
+        d.column_sql({{c.args[1]}}, ::Ricord::Dialects::ColumnOptions.new(
+          null: {{opts["null"] ? opts["null"] : false}},
+          {% if opts["limit"] %}limit: {{opts["limit"]}},{% end %}
+          {% if opts["to"] %}references: {{opts["to"].id.stringify}},{% end %}
+          {% if opts["on_delete"] %}on_delete: {{opts["on_delete"]}},{% end %}
+          {% if opts["default"] != nil %}default_sql: {{opts["default"].is_a?(StringLiteral) || (opts["default"].is_a?(Call) && opts["default"].name == "view") ? ("'" + (opts["default"].is_a?(Call) ? opts["default"].args[0] : opts["default"]) + "'") : (opts["default"].is_a?(BoolLiteral) ? (opts["default"] ? "1" : "0") : opts["default"].stringify)}},{% end %}
+        ), sql)
+      {% end %}
+      sql << ')'
+      session.run(sql.to_s)!
+      {% for ix in indexes %}
+        {% icols = ix.args[0].is_a?(ArrayLiteral) ? ix.args[0] : [ix.args[0]] %}
+        {% unique = ix.named_args && ix.named_args.any? { |na| na.name.stringify == "unique" && na.value } %}
+        session.run("CREATE #{ {{unique ? true : false}} ? "UNIQUE " : "" }INDEX IF NOT EXISTS \"index_{{table.id}}_on_{{icols.map(&.id).join("_").id}}\" ON \"{{table.id}}\" (\"{{icols.map(&.id).join("\", \"").id}}\")")!
+      {% end %}
+      nil
+    end
+
+    # Reads a row selected as COLUMNS into record *index*.
+    def self.read_row(store : ::Ricord::Storage::Store, index : Int32, rs : ::Db::Core::ResultSet, d : ::Ricord::Dialects::Dialect) : Nil | ::Ricord::Failures::DatabaseError
+      id = rs.read(Int64).or_panic
+      store.load_slot(index, 0, id)
+      {% for c, i in cols %}
+        {% t = types[c.args[1].id.stringify] %}
+        {% if t == "String" %}
+          v{{i}} = rs.read(String | Nil).or_panic
+          store.load_slot(index, {{i + 1}}, v{{i}}.nil? ? nil : store.add_text(v{{i}}))
+        {% elsif t == "::Std::Time::Time" %}
+          v{{i}} = rs.read(String | Nil).or_panic
+          if v{{i}}.nil?
+            store.load_slot(index, {{i + 1}}, nil)
+          else
+            t{{i}} = d.read_time(v{{i}}, TABLE)
+            return t{{i}} if t{{i}}.is_a?(::Ricord::Failures::DatabaseError)
+            store.load_slot(index, {{i + 1}}, t{{i}})
+          end
+        {% elsif t == "Bool" %}
+          v{{i}} = rs.read(Int64 | Nil).or_panic
+          store.load_slot(index, {{i + 1}}, v{{i}}.nil? ? nil : v{{i}} != 0_i64)
+        {% else %}
+          store.load_slot(index, {{i + 1}}, rs.read({{t.id}} | Nil).or_panic)
+        {% end %}
+      {% end %}
+      store.set_flag(index, ::Ricord::Storage::FLAG_PERSISTED, true)
+      nil
+    end
+
+    def id : Int64
+      v = store.slot(index, 0)
+      v.is_a?(Int64) ? v : 0_i64
+    end
+
+    {% for c, i in cols %}
+      {% t = types[c.args[1].id.stringify] %}
+      {% nullable = c.named_args && c.named_args.any? { |na| na.name.stringify == "null" && na.value } %}
+      {% cn = c.args[0].id %}
+      {% if t == "String" %}
+        def {{cn}} : String{% if nullable %} | Nil{% end %}
+          v = store.slot(index, {{i + 1}})
+          v.is_a?(::Ricord::Values::TextSpan) ? store.span_text(v) : {% if nullable %}nil{% else %}""{% end %}
+        end
+
+        def {{cn}}=(value : String{% if nullable %} | Nil{% end %}) : Nil
+          {% if nullable %}
+            if value.nil?
+              store.set_slot(index, {{i + 1}}, nil)
+              return nil
+            end
+          {% end %}
+          store.set_text(index, {{i + 1}}, value)
+          nil
+        end
+      {% else %}
+        def {{cn}} : {{t.id}}{% if nullable %} | Nil{% end %}
+          v = store.slot(index, {{i + 1}})
+          v.is_a?({{t.id}}) ? v : {% if nullable %}nil{% elsif t == "Int64" %}0_i64{% elsif t == "Float64" %}0.0{% elsif t == "Bool" %}false{% else %}::Std::Time::Time.utc(1970, 1, 1){% end %}
+        end
+
+        def {{cn}}=(value : {{t.id}}{% if t == "Int64" %} | Int32{% end %}{% if nullable %} | Nil{% end %}) : Nil
+          {% if t == "Int64" %}
+            store.set_slot(index, {{i + 1}}, value.is_a?(Int32) ? value.to_i64 : value)
+          {% else %}
+            store.set_slot(index, {{i + 1}}, value)
+          {% end %}
+          nil
+        end
+      {% end %}
+    {% end %}
+
+    def persisted? : Bool
+      store.flag?(index, ::Ricord::Storage::FLAG_PERSISTED) && !store.flag?(index, ::Ricord::Storage::FLAG_DESTROYED)
+    end
+
+    def new_record? : Bool
+      !store.flag?(index, ::Ricord::Storage::FLAG_PERSISTED)
+    end
+
+    def destroyed? : Bool
+      store.flag?(index, ::Ricord::Storage::FLAG_DESTROYED)
+    end
+
+    def changed? : Bool
+      COLUMNS.size.times { |col| return true if store.changed?(index, col) }
+      false
+    end
+
+    def to_param : String
+      id.to_s
+    end
+
+    # INSERT or UPDATE of the changed columns, in its own write unless inside one.
+    def save : self | ::Ricord::Failures::Error
+      record = self
+      result = session.write { |tx| record.save_in(tx) }
+      return result if result.is_a?(::Ricord::Failures::Failure)
+      self
+    end
+
+    def save_in(tx : ::Ricord::Sessions::Tx) : Nil | ::Ricord::Failures::DatabaseError
+      d = session.dialect
+      sql = String::Builder.new
+      args = [] of ::Db::Value::DBValue
+      if new_record?
+        names = ""
+        marks = ""
+        (1...COLUMNS.size).each do |col|
+          next unless store.changed?(index, col)
+          unless names.empty?
+            names << ", "
+            marks << ", "
+          end
+          names << '"' << COLUMNS[col] << '"'
+          marks << '?'
+          args << ::Ricord::Model.to_db(store.slot(index, col), store, d)
+        end
+        sql << "INSERT INTO \"" << TABLE << '"'
+        if names.empty?
+          sql << " DEFAULT VALUES"
+        else
+          sql << " (" << names << ") VALUES (" << marks << ')'
+        end
+        d.insert_returning(PRIMARY, sql)
+        new_id = session.query(sql.to_s, args) { |rs| m = ::Ricord::Model.advance(rs, TABLE); m.is_a?(::Ricord::Failures::DatabaseError) ? m : (m ? rs.read(Int64).or_panic : 0_i64) }
+        return new_id if new_id.is_a?(::Ricord::Failures::DatabaseError)
+        store.load_slot(index, 0, new_id)
+        store.set_flag(index, ::Ricord::Storage::FLAG_PERSISTED, true)
+      else
+        sets = ""
+        (1...COLUMNS.size).each do |col|
+          next unless store.changed?(index, col)
+          sets << ", " unless sets.empty?
+          sets << '"' << COLUMNS[col] << "\" = ?"
+          args << ::Ricord::Model.to_db(store.slot(index, col), store, d)
+        end
+        unless sets.empty?
+          args << id
+          sql << "UPDATE \"" << TABLE << "\" SET " << sets << " WHERE \"id\" = ?"
+          session.run(sql.to_s, args)!
+        end
+      end
+      store.clear_changed(index, COLUMNS.size)
+      nil
+    end
+
+    def destroy : self | ::Ricord::Failures::Error
+      record = self
+      result = session.write { |tx| tx.exec("DELETE FROM \"#{TABLE}\" WHERE \"id\" = ?", [record.id.as(::Db::Value::DBValue)]) }
+      return result if result.is_a?(::Ricord::Failures::Failure)
+      store.set_flag(index, ::Ricord::Storage::FLAG_DESTROYED, true)
+      self
+    end
+
+    def reload : self | ::Ricord::Failures::Error
+      record = self
+      found = session.query("SELECT #{COLUMNS.map { |c| "\"#{c}\"" }.join(", ")} FROM \"#{TABLE}\" WHERE \"id\" = ?", [id.as(::Db::Value::DBValue)]) do |rs|
+        m = ::Ricord::Model.advance(rs, TABLE)
+        if m.is_a?(::Ricord::Failures::DatabaseError)
+          m
+        elsif m
+          {{name.id}}.read_row(record.store, record.index, rs, record.session.dialect)
+        else
+          ::Ricord::Failures::RecordNotFound.new(TABLE, record.id)
+        end
+      end
+      return found if found.is_a?(::Ricord::Failures::Failure)
+      store.clear_changed(index, COLUMNS.size)
+      self
+    end
+
+    def self.new(db : ::Ricord::Sessions::Db, *, {% for c in cols %}{{c.args[0].id}} : {{types[c.args[1].id.stringify].id}}{% if types[c.args[1].id.stringify] == "Int64" %} | Int32{% end %} | Nil | ::Ricord::Values::Skip = ::Ricord::Values::SKIP, {% end %}) : {{name.id}}
+      session = db.session
+      index = session.store.add_record(MODEL_ID, COLUMNS.size, 0)
+      record = {{name.id}}.new(session, session.store, index)
+      {% for c, i in cols %}
+        {% cn = c.args[0].id %}
+        {% t = types[c.args[1].id.stringify] %}
+        unless {{cn}}.is_a?(::Ricord::Values::Skip)
+          if {{cn}}.nil?
+            session.store.set_slot(index, {{i + 1}}, nil)
+          else
+            {% if t == "String" %}
+              session.store.set_text(index, {{i + 1}}, {{cn}})
+            {% elsif t == "Int64" %}
+              session.store.set_slot(index, {{i + 1}}, {{cn}}.to_i64)
+            {% else %}
+              session.store.set_slot(index, {{i + 1}}, {{cn}})
+            {% end %}
+          end
+        end
+      {% end %}
+      record
+    end
+
+    def self.create(db : ::Ricord::Sessions::Db, **attrs) : {{name.id}} | ::Ricord::Failures::Error
+      new(db, **attrs).save
+    end
+
+    @[OnTape]
+    pub struct Query
+      getter session : ::Ricord::Sessions::Session
+      getter last_where : Int32
+      getter last_order : Int32
+      getter limit_value : Int64 | Nil
+      getter offset_value : Int64 | Nil
+
+      def initialize(@session : ::Ricord::Sessions::Session, @last_where : Int32, @last_order : Int32, @limit_value : Int64 | Nil, @offset_value : Int64 | Nil)
+      end
+
+      # A typed condition per column given; `Array` is IN, `Range` is between.
+      def where(*, id : Int64 | Int32 | Array(Int64) | Nil | ::Ricord::Values::Skip = ::Ricord::Values::SKIP, {% for c in cols %}{% t = types[c.args[1].id.stringify] %}{{c.args[0].id}} : {{t.id}}{% if t == "Int64" %} | Int32{% end %} | Array({{t.id}}){% if t == "Int64" || t == "Float64" || t == "::Std::Time::Time" || t == "String" %} | Range({{t.id}}, {{t.id}}){% end %} | Nil | ::Ricord::Values::Skip = ::Ricord::Values::SKIP, {% end %}) : Query
+        where_any(0_u8, id: id, {% for c in cols %}{{c.args[0].id}}: {{c.args[0].id}}, {% end %})
+      end
+
+      def or_where(*, id : Int64 | Int32 | Array(Int64) | Nil | ::Ricord::Values::Skip = ::Ricord::Values::SKIP, {% for c in cols %}{% t = types[c.args[1].id.stringify] %}{{c.args[0].id}} : {{t.id}}{% if t == "Int64" %} | Int32{% end %} | Array({{t.id}}){% if t == "Int64" || t == "Float64" || t == "::Std::Time::Time" || t == "String" %} | Range({{t.id}}, {{t.id}}){% end %} | Nil | ::Ricord::Values::Skip = ::Ricord::Values::SKIP, {% end %}) : Query
+        where_any(1_u8, id: id, {% for c in cols %}{{c.args[0].id}}: {{c.args[0].id}}, {% end %})
+      end
+
+      private def where_any(op : UInt8, **conds) : Query
+        node = ::Ricord::Model.where_conds(session.store, op, @last_where, conds)
+        Query.new(session, node, @last_order, @limit_value, @offset_value)
+      end
+
+      # A raw condition with `?` binds.
+      def where(sql : String, *binds) : Query
+        node = ::Ricord::Model.where_raw(session.store, @last_where, sql, binds)
+        Query.new(session, node, @last_order, @limit_value, @offset_value)
+      end
+
+      def order(*cols : Symbol) : Query
+        Query.new(session, @last_where, ::Ricord::Model.order_cols(session.store, @last_order, COLUMNS, cols), @limit_value, @offset_value)
+      end
+
+      def order(**cols) : Query
+        Query.new(session, @last_where, ::Ricord::Model.order_dirs(session.store, @last_order, COLUMNS, cols), @limit_value, @offset_value)
+      end
+
+      def limit(n : Int64 | Int32) : Query
+        Query.new(session, @last_where, @last_order, n.to_i64, @offset_value)
+      end
+
+      def offset(n : Int64 | Int32) : Query
+        Query.new(session, @last_where, @last_order, @limit_value, n.to_i64)
+      end
+
+      def build(selection : String, sql : String::Builder, args : Array(::Db::Value::DBValue)) : Nil
+        sql << "SELECT " << selection << " FROM \"" << TABLE << '"'
+        ::Ricord::Model.where_sql(session.store, @last_where, sql, args, session.dialect)
+        ::Ricord::Model.order_sql(session.store, @last_order, COLUMNS, sql)
+        session.dialect.limit_offset(@limit_value, @offset_value, sql)
+        nil
+      end
+
+      def to_a : Array({{name.id}}) | ::Ricord::Failures::DatabaseError
+        sql = String::Builder.new
+        args = [] of ::Db::Value::DBValue
+        build(COLUMNS.map { |c| "\"#{c}\"" }.join(", "), sql, args)
+        s = session
+        records = [] of {{name.id}}
+        failed = s.query(sql.to_s, args) do |rs|
+          problem = nil
+          while true
+            m = ::Ricord::Model.advance(rs, TABLE)
+            if m.is_a?(::Ricord::Failures::DatabaseError)
+              problem = m
+              break
+            end
+            break unless m
+            index = s.store.add_record(MODEL_ID, COLUMNS.size, 0)
+            read = {{name.id}}.read_row(s.store, index, rs, s.dialect)
+            problem = read if read.is_a?(::Ricord::Failures::DatabaseError)
+            records << {{name.id}}.new(s, s.store, index)
+          end
+          problem
+        end
+        return failed if failed.is_a?(::Ricord::Failures::DatabaseError)
+        records
+      end
+
+      def all : Array({{name.id}}) | ::Ricord::Failures::DatabaseError
+        to_a
+      end
+
+      # The store index of the first row, -1 for none.
+      def first_index : Int32 | ::Ricord::Failures::DatabaseError
+        query = @last_order < 0 ? order(:id) : self
+        query = query.limit(1)
+        sql = String::Builder.new
+        args = [] of ::Db::Value::DBValue
+        query.build(COLUMNS.map { |c| "\"#{c}\"" }.join(", "), sql, args)
+        s = session
+        s.query(sql.to_s, args) do |rs|
+          m = ::Ricord::Model.advance(rs, TABLE)
+          if m.is_a?(::Ricord::Failures::DatabaseError)
+            m
+          elsif m
+            index = s.store.add_record(MODEL_ID, COLUMNS.size, 0)
+            read = {{name.id}}.read_row(s.store, index, rs, s.dialect)
+            read.is_a?(::Ricord::Failures::DatabaseError) ? read : index
+          else
+            -1
+          end
+        end
+      end
+
+      def first : {{name.id}} | Nil | ::Ricord::Failures::DatabaseError
+        index = first_index
+        return index if index.is_a?(::Ricord::Failures::DatabaseError)
+        index < 0 ? nil : {{name.id}}.new(session, session.store, index)
+      end
+
+      def find_by(**conds) : {{name.id}} | Nil | ::Ricord::Failures::DatabaseError
+        where(**conds).first
+      end
+
+      def find(id : Int64 | Int32) : {{name.id}} | ::Ricord::Failures::RecordNotFound | ::Ricord::Failures::DatabaseError
+        index = where(id: id.to_i64).first_index
+        return index if index.is_a?(::Ricord::Failures::DatabaseError)
+        return ::Ricord::Failures::RecordNotFound.new(TABLE, id.to_i64) if index < 0
+        {{name.id}}.new(session, session.store, index)
+      end
+
+      def count : Int64 | ::Ricord::Failures::DatabaseError
+        sql = String::Builder.new
+        args = [] of ::Db::Value::DBValue
+        build("count(*)", sql, args)
+        session.scalar(sql.to_s, Int64, args)
+      end
+
+      def exists? : Bool | ::Ricord::Failures::DatabaseError
+        found = limit(1).count
+        return found if found.is_a?(::Ricord::Failures::DatabaseError)
+        found > 0
+      end
+
+      def new(**attrs) : {{name.id}}
+        {{name.id}}.new(session, **attrs)
+      end
+
+      def create(**attrs) : {{name.id}} | ::Ricord::Failures::Error
+        {{name.id}}.new(session, **attrs).save
+      end
+    end
+
+    def self.column_index(column : Symbol) : Int32
+      case column
+      when :id then 0
+      {% for c, i in cols %}
+      when {{c.args[0]}} then {{i + 1}}
+      {% end %}
+      else
+        -1
+      end
+    end
+
+    {% for d in defs %}
+      {{d}}
+    {% end %}
+  end
+end

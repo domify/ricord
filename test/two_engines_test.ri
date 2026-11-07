@@ -1,0 +1,27 @@
+# M1: one program opens sqlite3: and turso: and writes and reads a record on each.
+module test/two_engines_test
+
+import std/env
+import db/db/spec::{describe, it}
+import ricord
+import sqlite/sqlite/turso
+import test/models::*
+
+describe "two engines" do
+  it "writes and reads on SQLite and Turso at once" do
+    Ricord.open("sqlite3:%3Amemory%3A") do |lite|
+      Ricord.open("turso:%3Amemory%3A") do |turso|
+        User.create_table(lite).or_panic
+        User.create_table(turso).or_panic
+        User.create(lite, email: "on sqlite").or_panic
+        User.create(turso, email: "on turso").or_panic
+        a = User[lite].first.or_panic
+        assert !a.nil? && a.email == "on sqlite"
+        b = User[turso].first.or_panic
+        assert !b.nil? && b.email == "on turso"
+        assert lite.dialect.name == "sqlite"
+        assert turso.dialect.name == "turso"
+      end.or_panic
+    end.or_panic
+  end
+end

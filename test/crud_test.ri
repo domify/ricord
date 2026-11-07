@@ -1,0 +1,75 @@
+# M1: create, find, where, order, limit, offset, first, count, exists?, save, destroy.
+module test/crud_test
+
+import db/db/spec::{describe, it}
+import ricord/failures::{RecordNotFound}
+import test/spec_helper::*
+import test/models::*
+
+describe "crud" do
+  it "creates and finds" do
+    with_db do |db|
+      court = Court.create(db, name: "Tallinn", rank: 1).or_panic
+      assert court.id == 1_i64
+      assert court.persisted?
+      found = Court[db].find(court.id).or_panic
+      assert found.name == "Tallinn"
+      assert found.rank == 1_i64
+      assert found.active
+      missing = Court[db].find(99)
+      assert missing.is_a?(RecordNotFound)
+      assert Court[db].find_by(name: "Nowhere").or_panic.nil?
+    end
+  end
+
+  it "filters with every where form" do
+    with_db do |db|
+      ["a", "b", "c", "d"].each_with_index { |n, i| Court.create(db, name: n, rank: i + 1).or_panic }
+      Court.create(db, name: "e").or_panic
+      assert Court[db].where(name: "b").count.or_panic == 1_i64
+      assert Court[db].where(rank: nil).count.or_panic == 1_i64
+      assert Court[db].where(rank: [1_i64, 3_i64]).count.or_panic == 2_i64
+      assert Court[db].where(rank: 2_i64..3_i64).count.or_panic == 2_i64
+      assert Court[db].where(rank: 2_i64...3_i64).count.or_panic == 1_i64
+      assert Court[db].where(rank: [] of Int64).count.or_panic == 0_i64
+      assert Court[db].where("rank > ?", 2).count.or_panic == 2_i64
+      assert Court[db].where(name: "a").or_where(name: "d").count.or_panic == 2_i64
+      base = Court[db].where(rank: 1_i64..4_i64)
+      narrower = base.where(name: "a")
+      assert base.count.or_panic == 4_i64, "an earlier query keeps its own conditions"
+      assert narrower.count.or_panic == 1_i64
+      assert db.statements.any?(&.includes?("\"rank\" IN (?, ?)"))
+    end
+  end
+
+  it "orders, limits and offsets" do
+    with_db do |db|
+      ["b", "a", "c"].each { |n| Court.create(db, name: n).or_panic }
+      names = Court[db].order(:name).to_a.or_panic.map(&.name)
+      assert names == ["a", "b", "c"]
+      last = Court[db].order(name: :desc).first.or_panic
+      assert !last.nil? && last.name == "c"
+      assert Court[db].order(:name).limit(2).to_a.or_panic.size == 2
+      assert Court[db].order(:name).offset(1).to_a.or_panic.map(&.name) == ["b", "c"]
+      first = Court[db].first.or_panic
+      assert !first.nil? && first.name == "b"
+      assert Court[db].exists?.or_panic
+      assert !Court[db].where(name: "z").exists?.or_panic
+    end
+  end
+
+  it "saves changes and destroys" do
+    with_db do |db|
+      court = Court.create(db, name: "Old").or_panic
+      court.name = "New"
+      assert court.changed?
+      court.save.or_panic
+      assert !court.changed?
+      assert db.statements.any?(&.starts_with?("UPDATE \"courts\" SET \"name\" = ?"))
+      assert Court[db].find(court.id).or_panic.name == "New"
+      court.destroy.or_panic
+      assert court.destroyed?
+      assert Court[db].count.or_panic == 0_i64
+    end
+  end
+end

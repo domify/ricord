@@ -1,0 +1,28 @@
+# Opens the test database for a block: the file at RICORD_DATABASE_URL (bin/test
+# gives each slot its own), recreated with the test models' tables.
+module test/spec_helper
+
+import std/env
+import std/file
+import ricord
+import sqlite/sqlite/turso
+import ricord/sessions::{Session}
+import test/models::*
+
+pub def database_url : String
+  ENV["RICORD_DATABASE_URL"]? || "sqlite3:#{ENV["TMPDIR"]? || "/tmp"}/ricord_test.db"
+end
+
+pub def with_db(log : Bool = true, & : Session -> Nil) : Nil
+  url = database_url
+  path = url.starts_with?("turso:") ? url[6, url.bytesize - 6] : url[8, url.bytesize - 8]
+  [path, "#{path}-wal", "#{path}-shm"].each { |p| File.delete(p) if File.exists?(p) }
+  Ricord.open(url, log: log) do |db|
+    Account.create_table(db).or_panic
+    Court.create_table(db).or_panic
+    Case.create_table(db).or_panic
+    User.create_table(db).or_panic
+    db.release
+    yield db
+  end.or_panic
+end

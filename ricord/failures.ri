@@ -1,0 +1,120 @@
+# Ricord's errors: flat structs, as db's `DBError` is, so `!` carries them out of
+# any block. The message is "<table> <operation>: <text>", at most 240 bytes,
+# cut on a UTF-8 boundary with a final "…" (doc/DESIGN.md, M1 item 2). Text
+# fields the design lists (column, callback, first message) are part of the
+# message; numeric fields are their own.
+module ricord/failures
+
+import std/static_array
+import db/db/errors::{DBError}
+import sqlite/sqlite/errors::{SQLite3Error}
+
+pub MESSAGE_SIZE = 240
+
+# The base of every Ricord error.
+pub abstract struct Failure
+  @message_bytes : StaticArray(UInt8, 240)
+  @message_size : Int32
+
+  def initialize(table : String, operation : String, text : String)
+    full = table.empty? ? "#{operation}: #{text}" : "#{table} #{operation}: #{text}"
+    @message_bytes = StaticArray(UInt8, 240).new(0_u8)
+    size = full.bytesize
+    if size > MESSAGE_SIZE
+      size = MESSAGE_SIZE - 3
+      while size > 0 && (full.byte_at(size) & 0xC0_u8) == 0x80_u8
+        size -= 1
+      end
+    end
+    index = 0
+    while index < size
+      @message_bytes[index] = full.byte_at(index)
+      index += 1
+    end
+    if size < full.bytesize
+      ellipsis = "…"
+      3.times { |i| @message_bytes[size + i] = ellipsis.byte_at(i) }
+      size += 3
+    end
+    @message_size = size
+  end
+
+  def message : String
+    String.build(@message_size) { |writer| @message_size.times { |index| writer.push(@message_bytes[index]) } }
+  end
+
+  def to_s : String
+    message
+  end
+
+  def inspect : String
+    "#<#{self.class}: #{message}>"
+  end
+end
+
+impl ::Error for Failure
+end
+
+# `find` found no row with the id.
+pub struct RecordNotFound < Failure
+  getter id : Int64
+
+  def initialize(table : String, @id : Int64)
+    super(table, "find", "no row with id #{@id}")
+  end
+end
+
+# A save refused by validations; `count` is the number of error entries.
+pub struct RecordInvalid < Failure
+  getter count : Int32
+
+  def initialize(table : String, first : String, @count : Int32)
+    super(table, "save", @count > 1 ? "#{first} (and #{@count - 1} more)" : first)
+  end
+end
+
+# A save that changed a scoped column.
+pub struct ScopeError < Failure
+  def initialize(table : String, column : String)
+    super(table, "save", "#{column} is scoped and cannot change")
+  end
+end
+
+# A callback returned an error.
+pub struct CallbackError < Failure
+  def initialize(table : String, operation : String, callback : String)
+    super(table, operation, "#{callback} refused")
+  end
+end
+
+# An after-commit item failed; `id` is its record's key.
+pub struct AfterCommitError < Failure
+  getter id : Int64
+
+  def initialize(table : String, @id : Int64, first : String)
+    super(table, "after_commit", first)
+  end
+end
+
+# The database refused a statement; `code` is the driver's result code, or -1.
+pub struct DatabaseError < Failure
+  getter code : Int32
+
+  def initialize(table : String, operation : String, text : String, @code : Int32 = -1)
+    super(table, operation, text)
+  end
+
+  def self.from(e : DBError, table : String, operation : String) : DatabaseError
+    code = e.is_a?(SQLite3Error) ? e.code : -1
+    DatabaseError.new(table, operation, e.message, code)
+  end
+end
+
+# What `tx.roll_back` returns: a write block that returns it rolls back.
+pub struct Rollback < Failure
+  def initialize
+    super("", "write", "rolled back")
+  end
+end
+
+pub alias Error = RecordNotFound | RecordInvalid | ScopeError | CallbackError | AfterCommitError | DatabaseError | Rollback

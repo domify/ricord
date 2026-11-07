@@ -1,0 +1,139 @@
+# The SQL dialects: `Sqlite` for libsqlite3 and `Turso`, which forwards to it
+# (both speak SQLite's SQL). A session picks one from its URI scheme
+# (doc/DESIGN.md, M1 item 4).
+module ricord/dialects
+
+import std/int
+import std/time::{Time}
+import db/db/errors::{DBError}
+import sqlite/sqlite/dates::{parse_time}
+import ricord/values::{Value}
+import ricord/failures::{DatabaseError}
+
+# What a `col` declaration says about its column beyond the type.
+@[OnTape]
+pub struct ColumnOptions
+  getter null : Bool
+  getter limit : Int32
+  getter primary : Bool
+  getter references : String
+  getter on_delete : Symbol
+  getter default_sql : String
+
+  def initialize(@null : Bool = false, @limit : Int32 = -1, @primary : Bool = false,
+                 @references : String = "", @on_delete : Symbol = :none, @default_sql : String = "")
+  end
+end
+
+# The SQL both engines share; `Sqlite` and `Turso` differ only in name.
+pub abstract struct SqliteSql
+  abstract def name : String
+
+  def quote_ident(name : String, into : String::Builder) : Nil
+    into << '"' << name << '"'
+    nil
+  end
+
+  def placeholder(n : Int32, into : String::Builder) : Nil
+    into << '?'
+    nil
+  end
+
+  def insert_returning(primary : String, into : String::Builder) : Nil
+    into << " RETURNING "
+    quote_ident(primary, into)
+    nil
+  end
+
+  def limit_offset(limit : Int64 | Nil, offset : Int64 | Nil, into : String::Builder) : Nil
+    if limit
+      into << " LIMIT " << limit
+    elsif offset
+      into << " LIMIT -1"
+    end
+    into << " OFFSET " << offset if offset
+    nil
+  end
+
+  # `(a, b) > (?, ?)`, the condition after a batch's last row.
+  def keyset_after(columns : Array(String), into : String::Builder) : Nil
+    into << '('
+    columns.each_with_index do |column, i|
+      into << ", " if i > 0
+      quote_ident(column, into)
+    end
+    into << ") > ("
+    columns.size.times { |i| into << (i > 0 ? ", ?" : "?") }
+    into << ')'
+    nil
+  end
+
+  # UTC, `%Y-%m-%d %H:%M:%S.%6N`: sorts as text and reads back unchanged.
+  def write_time(t : Time) : String
+    u = t.to_utc
+    "#{Time.pad4(u.year)}-#{Time.pad2(u.month)}-#{Time.pad2(u.day)} " \
+    "#{Time.pad2(u.hour)}:#{Time.pad2(u.minute)}:#{Time.pad2(u.second)}.#{pad6(u.nanosecond // 1000)}"
+  end
+
+  def read_time(text : String, table : String = "", operation : String = "read") : Time | DatabaseError
+    parsed = parse_time(text)
+    return DatabaseError.from(parsed, table, operation) if parsed.is_a?(DBError)
+    parsed
+  end
+
+  def begin_write : String
+    "BEGIN IMMEDIATE"
+  end
+
+  def pragmas : Array(String)
+    ["PRAGMA foreign_keys=ON", "PRAGMA busy_timeout=5000"]
+  end
+
+  # The column's type and constraints, after its quoted name.
+  def column_sql(type : Symbol, options : ColumnOptions, into : String::Builder) : Nil
+    into << case type
+    when :integer, :bigint, :boolean, :references then "INTEGER"
+    when :float                                    then "REAL"
+    when :binary                                   then "BLOB"
+    else                                                "TEXT"
+    end
+    into << " PRIMARY KEY AUTOINCREMENT" if options.primary
+    into << " NOT NULL" unless options.null || options.primary
+    into << " DEFAULT " << options.default_sql unless options.default_sql.empty?
+    unless options.references.empty?
+      into << " REFERENCES "
+      quote_ident(options.references, into)
+      into << "(\"id\")"
+      case options.on_delete
+      when :cascade  then into << " ON DELETE CASCADE"
+      when :restrict then into << " ON DELETE RESTRICT"
+      when :nullify  then into << " ON DELETE SET NULL"
+      end
+    end
+    nil
+  end
+
+  def translate(error : DBError, table : String, operation : String) : DatabaseError
+    DatabaseError.from(error, table, operation)
+  end
+
+  private def pad6(n : Int32) : String
+    text = n.to_s
+    "000000"[0, 6 - text.bytesize] + text
+  end
+end
+
+pub struct Sqlite < SqliteSql
+  def name : String
+    "sqlite"
+  end
+end
+
+# libturso speaks SQLite's SQL: every method is `SqliteSql`'s.
+pub struct Turso < SqliteSql
+  def name : String
+    "turso"
+  end
+end
+
+pub alias Dialect = Sqlite | Turso

@@ -1,0 +1,35 @@
+# The values a store slot holds, and the marker typed `where` keywords default to
+# (doc/DESIGN.md, M1 item 1).
+module ricord/values
+
+import std/time::{Time}
+
+# A run of bytes in a store's `bytes` buffer: where a BLOB column's value is.
+@[Tape::Flat]
+pub struct ByteSpan
+  getter start : Int32
+  getter size : Int32
+
+  def initialize(@start : Int32, @size : Int32)
+  end
+end
+
+# A run of bytes in a store's `text` builder: where a text column's value is.
+# Not `String::Span`, which the compiler treats as a view and will not let a
+# def return; this is two numbers.
+@[Tape::Flat]
+pub struct TextSpan
+  getter start : Int32
+  getter size : Int32
+
+  def initialize(@start : Int32, @size : Int32)
+  end
+end
+
+pub alias Value = Nil | Bool | Int64 | Float64 | Time | TextSpan | ByteSpan
+
+# The default of every `where` keyword: the column was not given.
+pub struct Skip
+end
+
+pub SKIP = Skip.new

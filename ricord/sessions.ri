@@ -1,0 +1,216 @@
+# A session: one connection for a block, its store, its dialect and the state of
+# its transactions (doc/DESIGN.md, M1 items 6 and 7).
+module ricord/sessions
+
+import std/time::{Time}
+import std/slice::{Bytes}
+import std/log::{Log}
+import db/db/db
+import db/db/core::{Connection, ResultSet}
+import db/db/errors::{DBError}
+import db/db/value::{DBValue}
+import ricord/values::{Value, ByteSpan}
+import ricord/storage::{Store}
+import ricord/dialects::{Dialect, Sqlite, Turso}
+import ricord/failures::{Failure, DatabaseError, Rollback}
+import ricord/commit_queue::{CommitItem}
+
+pub READ_HOLD_WARN = Time::Span.new(milliseconds: 100_i64)
+pub LOG = Log.for("ricord")
+
+# The transaction state one connection's sessions share.
+pub class TxState
+  property depth = 0
+  property savepoints = 0
+  property reading = false
+  property read_since = Time.utc(1970, 1, 1)
+  property chain = 0
+  getter pending = [] of CommitItem
+  getter log_text = String::Builder.new
+  getter log_spans = [] of String::Span
+
+  def note(sql : String) : Nil
+    start = @log_text.bytesize
+    @log_text << sql
+    @log_spans << String::Span.new(start, sql.bytesize)
+    nil
+  end
+end
+
+@[OnTape]
+pub struct Session
+  getter conn : Connection
+  getter store : Store
+  getter dialect : Dialect
+  getter state : TxState
+  getter log : Bool
+
+  def initialize(@conn : Connection, @store : Store, @dialect : Dialect, @state : TxState, @log : Bool)
+  end
+
+  def session : Session
+    self
+  end
+
+  # The SQL run so far, when the session logs.
+  def statements : Array(String)
+    text = @state.log_text.to_s
+    @state.log_spans.map { |span| text[span] }
+  end
+
+  def note(sql : String) : Nil
+    @state.note(sql) if @log
+    nil
+  end
+
+  # Starts the shared read transaction if none and no write is open.
+  def start_read : Nil | DatabaseError
+    return nil if @state.reading || @state.depth > 0
+    run("BEGIN")!
+    @state.reading = true
+    @state.read_since = Time.utc
+    nil
+  end
+
+  # Ends the shared read transaction, if any.
+  def release : Nil
+    if @state.depth > 0
+      LOG.warn { "release inside a write does nothing" }
+      return nil
+    end
+    end_read
+    nil
+  end
+
+  private def end_read : Nil
+    return nil unless @state.reading
+    run("COMMIT")
+    @state.reading = false
+    held = Time.utc - @state.read_since
+    LOG.warn { "read transaction held #{held.total_milliseconds} ms" } if @log && held > READ_HOLD_WARN
+    nil
+  end
+
+  # Runs *sql* with no result: rows changed.
+  def run(sql : String, args : Array(DBValue) = [] of DBValue) : Int64 | DatabaseError
+    note(sql)
+    result = @conn.exec(sql, args: args)
+    return DatabaseError.from(result, "", "exec") if result.is_a?(DBError)
+    result.rows_affected
+  end
+
+  # Raw SQL: rows changed.
+  def exec(sql : String, args : Array(DBValue) = [] of DBValue) : Int64 | DatabaseError
+    start_read if @state.depth == 0 && !sql.starts_with?("BEGIN")
+    run(sql, args)
+  end
+
+  # Raw SQL: the first column of the first row.
+  def scalar(sql : String, as klass : K.class, args : Array(DBValue) = [] of DBValue) : K | DatabaseError forall K
+    start_read!
+    note(sql)
+    result = @conn.scalar(sql, args: args, as: klass)
+    return DatabaseError.from(result, "", "scalar") if result.is_a?(DBError)
+    result
+  end
+
+  # Raw SQL: the driver's result set, for the block.
+  def query(sql : String, args : Array(DBValue) = [] of DBValue, & : ResultSet -> T) : T | DatabaseError forall T
+    start_read!
+    note(sql)
+    result = @conn.query(sql, args: args) { |rs| yield rs }
+    return DatabaseError.from(result, "", "query") if result.is_a?(DBError)
+    result
+  end
+
+  # The block in a write: `BEGIN IMMEDIATE`, or a savepoint inside one. A block
+  # value that is a `Failure` rolls back and is returned; any other commits.
+  def write(& : Tx -> T) : T | DatabaseError forall T
+    if @state.depth == 0
+      end_read
+      if @conn.transaction_state.in_transaction?
+        run("ROLLBACK")
+      end
+      run(@dialect.begin_write)!
+      @state.depth = 1
+      tx = Tx.new(self, 1)
+      value = yield tx
+      @state.depth = 0
+      if value.is_a?(Failure)
+        run("ROLLBACK")
+      else
+        run("COMMIT")!
+      end
+      value
+    else
+      @state.savepoints += 1
+      name = "ricord_#{@state.savepoints}"
+      run("SAVEPOINT #{name}")!
+      @state.depth += 1
+      tx = Tx.new(self, @state.depth)
+      value = yield tx
+      @state.depth -= 1
+      if value.is_a?(Failure)
+        run("ROLLBACK TO #{name}")
+        run("RELEASE #{name}")
+      else
+        run("RELEASE #{name}")!
+      end
+      value
+    end
+  end
+
+  # A child session with a fresh store for one request; the read transaction
+  # ends with the block.
+  def request(& : Session -> T) : T forall T
+    if @state.depth == 0 && @conn.transaction_state.in_transaction? && !@state.reading
+      run("ROLLBACK")
+    end
+    store = Store.new
+    child = Session.new(@conn, store, @dialect, @state, @log)
+    value = yield child
+    if @state.depth > 0
+      run("ROLLBACK")
+      @state.depth = 0
+    end
+    end_read
+    value
+  end
+end
+
+# A write in progress: reads through it see its uncommitted rows.
+@[OnTape]
+pub struct Tx
+  getter session : Session
+  getter depth : Int32
+
+  def initialize(@session : Session, @depth : Int32)
+  end
+
+  def store : Store
+    @session.store
+  end
+
+  def dialect : Dialect
+    @session.dialect
+  end
+
+  def roll_back : Rollback
+    Rollback.new
+  end
+
+  def write(& : Tx -> T) : T | DatabaseError forall T
+    @session.write { |tx| yield tx }
+  end
+
+  def exec(sql : String, args : Array(DBValue) = [] of DBValue) : Int64 | DatabaseError
+    @session.run(sql, args)
+  end
+end
+
+pub alias Db = Session | Tx
+
+# The dialect for a URI's scheme: `turso:` is Turso, anything else SQLite.
+pub def dialect_for(uri : String) : Dialect
+  uri.starts_with?("turso:") ? Turso.new.as(Dialect) : Sqlite.new.as(Dialect)
+end

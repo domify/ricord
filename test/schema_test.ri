@@ -1,0 +1,40 @@
+# M1: create_table for each column type, indexes and foreign keys.
+module test/schema_test
+
+import db/db/spec::{describe, it}
+import ricord/failures::{DatabaseError}
+import test/spec_helper::*
+import test/models::*
+
+describe "schema" do
+  it "creates tables, indexes and foreign keys" do
+    with_db do |db|
+      ddl = db.statements.find(&.starts_with?("CREATE TABLE IF NOT EXISTS \"courts\"")) || ""
+      assert ddl.includes?("\"id\" INTEGER PRIMARY KEY AUTOINCREMENT")
+      assert ddl.includes?("\"name\" TEXT NOT NULL")
+      assert ddl.includes?("\"rank\" INTEGER")
+      assert ddl.includes?("\"score\" REAL")
+      assert ddl.includes?("\"active\" INTEGER NOT NULL DEFAULT 1")
+      assert ddl.includes?("REFERENCES \"accounts\"(\"id\") ON DELETE CASCADE")
+      assert db.statements.any?(&.includes?("CREATE UNIQUE INDEX IF NOT EXISTS \"index_courts_on_name\""))
+      Court.create(db, name: "x").or_panic
+      duplicate = Court.create(db, name: "x")
+      assert duplicate.is_a?(DatabaseError), "unique index enforced"
+    end
+  end
+
+  it "enforces on_delete" do
+    with_db do |db|
+      account = Account.create(db, name: "acme").or_panic
+      court = Court.create(db, name: "c", account_id: account.id).or_panic
+      Case.create(db, court_id: court.id, title: "t").or_panic
+      refused = court.destroy
+      assert refused.is_a?(DatabaseError), "restrict"
+      other = Court.create(db, name: "d", account_id: account.id).or_panic
+      assert Court[db].count.or_panic == 2_i64
+      Case[db].where(court_id: court.id).to_a.or_panic.each(&.destroy.or_panic)
+      account.destroy.or_panic
+      assert Court[db].count.or_panic == 0_i64, "cascade"
+    end
+  end
+end

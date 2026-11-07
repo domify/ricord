@@ -1,0 +1,51 @@
+# M1: reads share one transaction; a write ends it first; release and request end it;
+# a transaction left open is rolled back by the next write.
+module test/read_tx_test
+
+import db/db/spec::{describe, it}
+import test/spec_helper::*
+import test/models::*
+
+describe "read transaction" do
+  it "shares one read transaction and ends it before a write" do
+    with_db do |db|
+      start = db.statements.size
+      Court[db].count.or_panic
+      Court[db].count.or_panic
+      begins = 0
+      db.statements.each_with_index { |s, i| begins += 1 if i >= start && s == "BEGIN" }
+      assert begins == 1, "two reads, one BEGIN"
+      Court.create(db, name: "a").or_panic
+      commit_at = -1
+      write_at = -1
+      db.statements.each_with_index do |s, i|
+        next if i < start
+        commit_at = i if s == "COMMIT" && commit_at < 0
+        write_at = i if s == "BEGIN IMMEDIATE" && write_at < 0
+      end
+      assert commit_at >= 0 && commit_at < write_at, "the read ends before the write"
+    end
+  end
+
+  it "ends with release and with request" do
+    with_db do |db|
+      Court[db].count.or_panic
+      db.release
+      assert db.statements.last == "COMMIT"
+      db.request do |r|
+        Court[r].count.or_panic
+        nil
+      end
+      assert db.statements.last == "COMMIT"
+    end
+  end
+
+  it "rolls back a transaction left open" do
+    with_db do |db|
+      db.exec("BEGIN").or_panic
+      Court.create(db, name: "a").or_panic
+      assert db.statements.includes?("ROLLBACK")
+      assert Court[db].count.or_panic == 1_i64
+    end
+  end
+end

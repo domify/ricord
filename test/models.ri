@@ -1,0 +1,33 @@
+# The models the tests share.
+module test/models
+
+import ricord
+import ricord/model::{model}
+
+model Account do
+  table :accounts
+  col :name, :string
+end
+
+model Court do
+  table :courts
+  col :account_id, :references, to: :accounts, on_delete: :cascade, null: true
+  col :name, :string
+  col :rank, :integer, null: true
+  col :score, :float, null: true
+  col :active, :boolean, default: true
+  col :opened_at, :datetime, null: true
+  index :name, unique: true
+end
+
+model Case do
+  table :cases
+  col :court_id, :references, to: :courts, on_delete: :restrict
+  col :title, :string
+end
+
+model User do
+  table :users
+  col :email, :string
+  col :admin, :boolean, default: false
+end
