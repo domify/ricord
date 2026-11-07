@@ -1,0 +1,138 @@
+# Loaded associations and load groups in the store (doc/DESIGN.md, M3 item 1).
+#
+# A load group is the records read by one query: they are consecutive in the
+# store, and `groups[index]` holds the group's first record index (-1 for a
+# record not read by a query, a group of itself). A loaded association of a
+# record is a range in `links` named by its `link_ranges` pair: start -1 means
+# not loaded; a loaded nil `belongs_to`/`has_one` is (start, 1) with
+# `links[start] = -1`.
+module ricord/associations
+
+import std/int
+import ricord/storage::{Store, FLAG_GROUP}
+import ricord/values::{Value}
+
+# Distinct keys per group query: below SQLite's 32,766-variable limit.
+pub CHUNK = 1000
+
+# Marks records first ... first + count - 1 as one load group.
+pub def mark_group(store : Store, first : Int32, count : Int32) : Nil
+  count.times do |k|
+    store.groups[first + k] = first
+    store.set_flag(first + k, FLAG_GROUP, count > 1)
+  end
+  nil
+end
+
+# The first record of *index*'s load group.
+pub def group_first(store : Store, index : Int32) : Int32
+  g = store.groups[index]
+  g < 0 ? index : g
+end
+
+# The number of records in the group that starts at *first*.
+pub def group_size(store : Store, first : Int32) : Int32
+  return 1 if store.groups[first] != first
+  n = 1
+  while first + n < store.size && store.groups[first + n] == first
+    n += 1
+  end
+  n
+end
+
+private def range_at(store : Store, index : Int32, assoc : Int32) : Int32
+  store.link_starts[index] + 2 * assoc
+end
+
+pub def loaded?(store : Store, index : Int32, assoc : Int32) : Bool
+  store.link_ranges[range_at(store, index, assoc)] >= 0
+end
+
+# Forgets a loaded association (after its key changed or a child was added).
+pub def unload(store : Store, index : Int32, assoc : Int32) : Nil
+  at = range_at(store, index, assoc)
+  store.link_ranges[at] = -1
+  store.link_ranges[at + 1] = 0
+  nil
+end
+
+# Sets a single-record association: *target* is a record index or -1.
+pub def set_one(store : Store, index : Int32, assoc : Int32, target : Int32) : Nil
+  at = range_at(store, index, assoc)
+  store.link_ranges[at] = store.links.size
+  store.link_ranges[at + 1] = 1
+  store.links << target
+  nil
+end
+
+# The loaded target of a single-record association: an index, or -1 for nil.
+pub def one(store : Store, index : Int32, assoc : Int32) : Int32
+  store.links[store.link_ranges[range_at(store, index, assoc)]]
+end
+
+# Records a has_many range: its children are `links[start, count]`.
+pub def set_range(store : Store, index : Int32, assoc : Int32, start : Int32, count : Int32) : Nil
+  at = range_at(store, index, assoc)
+  store.link_ranges[at] = start
+  store.link_ranges[at + 1] = count
+  nil
+end
+
+pub def range_start(store : Store, index : Int32, assoc : Int32) : Int32
+  store.link_ranges[range_at(store, index, assoc)]
+end
+
+pub def range_count(store : Store, index : Int32, assoc : Int32) : Int32
+  store.link_ranges[range_at(store, index, assoc) + 1]
+end
+
+# Appends to *into* the distinct non-nil Int64 values of column *col* over the
+# group records first ... first + count - 1 whose association *assoc* is not
+# loaded.
+pub def group_keys(store : Store, first : Int32, count : Int32, assoc : Int32, col : Int32, into : Array(Int64)) : Nil
+  count.times do |k|
+    r = first + k
+    next if loaded?(store, r, assoc)
+    v = store.slot(r, col)
+    if v.is_a?(Int64)
+      into << v unless into.includes?(v)
+    end
+  end
+  nil
+end
+
+# Links each unloaded group record to the target in *targets* whose column
+# *target_col* equals the record's column *col*, or to -1.
+pub def link_group(store : Store, first : Int32, count : Int32, assoc : Int32, col : Int32, targets : Array(Int32), target_col : Int32) : Nil
+  count.times do |k|
+    r = first + k
+    next if loaded?(store, r, assoc)
+    v = store.slot(r, col)
+    found = -1
+    unless v.nil?
+      targets.each { |t| found = t if found < 0 && store.slot(t, target_col) == v }
+    end
+    set_one(store, r, assoc, found)
+  end
+  nil
+end
+
+# Gives each owner first ... first + count - 1 its range of *children*, which
+# are ordered by the column *fk*: the children whose fk is the owner's id.
+pub def link_children(store : Store, first : Int32, count : Int32, assoc : Int32, children : Array(Int32), fk : Int32) : Nil
+  count.times do |k|
+    r = first + k
+    next if loaded?(store, r, assoc)
+    id = store.slot(r, 0)
+    start = store.links.size
+    n = 0
+    children.each do |c|
+      if store.slot(c, fk) == id
+        store.links << c
+        n += 1
+      end
+    end
+    set_range(store, r, assoc, start, n)
+  end
+  nil
+end

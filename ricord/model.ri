@@ -21,6 +21,7 @@ import ricord/storage::{Store, FLAG_PERSISTED, FLAG_DESTROYED}
 import ricord/dialects::{Dialect, ColumnOptions}
 import ricord/failures::{RecordNotFound, DatabaseError, Failure}
 import ricord/sessions::{Session, Tx, Db}
+pub import ricord/associations
 
 # Appends the value of a store slot to *args* as a bind argument. A BLOB slot
 # binds as Bytes copied out of the store.
@@ -207,13 +208,34 @@ pub macro model(name, &block)
   {% stamps = false %}
   {% commits = [] of ASTNode %}
   {% rollbacks = [] of ASTNode %}
+  {% assocs = [] of ASTNode %}
+  {% expand_refs = false %}
   {% callbacks = {"before_validation" => [] of ASTNode, "after_validation" => [] of ASTNode, "before_save" => [] of ASTNode, "after_save" => [] of ASTNode, "before_create" => [] of ASTNode, "after_create" => [] of ASTNode, "before_update" => [] of ASTNode, "after_update" => [] of ASTNode, "before_destroy" => [] of ASTNode, "after_destroy" => [] of ASTNode} %}
   {% for e in exprs %}
     {% if e.is_a?(Call) && e.name == "table" %}
       {% arg = e.args[0] %}
       {% table = arg.is_a?(StringLiteral) ? arg : (arg.is_a?(SymbolLiteral) ? arg.id.stringify : (arg.is_a?(Call) && arg.name == "view" ? arg.args[0] : arg.stringify)) %}
     {% elsif e.is_a?(Call) && e.name == "col" %}
+      {% bt = e.named_args && e.named_args.find { |na| na.name.stringify == "belongs_to" } %}
+      {% if bt %}
+        {% if e.args.size == 1 %}{% expand_refs = true %}{% end %}
+        {% bcn = e.named_args.find { |na| na.name.stringify == "class_name" } %}
+        {% assocs << ["belongs_to", bt.value.id, (bcn ? bcn.value.id : bt.value.id.stringify.camelcase.id), e.args[0].id, cols.size + 1] %}
+      {% end %}
       {% cols << e %}
+    {% elsif e.is_a?(Call) && (e.name == "has_many" || e.name == "has_one") %}
+      {% an = e.args[0].id.stringify %}
+      {% acn = e.named_args && e.named_args.find { |na| na.name.stringify == "class_name" } %}
+      {% afk = e.named_args && e.named_args.find { |na| na.name.stringify == "foreign_key" } %}
+      {% if e.named_args %}
+        {% for na in e.named_args %}
+          {% unless ["class_name", "foreign_key"].includes?(na.name.stringify) %}
+            {% raise "model #{name}: #{e.name} #{an} has unknown option #{na.name}" %}
+          {% end %}
+        {% end %}
+      {% end %}
+      {% single = e.name == "has_many" ? (an.ends_with?("ies") ? an[0..-4] + "y" : (an.ends_with?("s") ? an[0..-2] : an)) : an %}
+      {% assocs << [e.name.stringify, an.id, (acn ? acn.value.id : single.camelcase.id), (afk ? afk.value.id : (name.stringify.underscore + "_id").id), -1] %}
     {% elsif e.is_a?(Call) && e.name == "cols" %}
       {% unless e.args.size == 1 && e.args[0].is_a?(SymbolLiteral) && e.args[0].id == "timestamps" %}
         {% raise "model #{name}: cols takes :timestamps" %}
@@ -262,14 +284,14 @@ pub macro model(name, &block)
       {% raise "model #{name}: unknown declaration #{e}" %}
     {% end %}
   {% end %}
-  {% types = {"string" => "String", "text" => "String", "integer" => "Int64", "bigint" => "Int64", "references" => "Int64", "float" => "Float64", "boolean" => "Bool", "datetime" => "::Std::Time::Time", "time" => "::Std::Time::Time", "json" => "::Ricord::Json::Json", "binary" => "::Ricord::Blob::Blob"} %}
+  {% types = {"string" => "String", "text" => "String", "integer" => "Int64", "bigint" => "Int64", "int64" => "Int64", "references" => "Int64", "float" => "Float64", "boolean" => "Bool", "datetime" => "::Std::Time::Time", "time" => "::Std::Time::Time", "json" => "::Ricord::Json::Json", "binary" => "::Ricord::Blob::Blob"} %}
   {% for c in cols %}
-    {% unless types[c.args[1].id.stringify] %}
+    {% unless (c.args.size == 1 && expand_refs) || types[c.args[1].id.stringify] %}
       {% raise "model #{name}: column #{c.args[0]} has unknown type #{c.args[1]}" %}
     {% end %}
     {% if c.named_args %}
       {% for na in c.named_args %}
-        {% unless ["null", "default", "limit", "to", "on_delete"].includes?(na.name.stringify) %}
+        {% unless ["null", "default", "limit", "to", "on_delete", "belongs_to", "class_name", "index", "to_table"].includes?(na.name.stringify) %}
           {% raise "model #{name}: column #{c.args[0]} has unknown option #{na.name}" %}
         {% end %}
       {% end %}
@@ -284,7 +306,26 @@ pub macro model(name, &block)
     {% end %}
   {% end %}
 
-  {% if expand_timestamps %}
+  {% if expand_refs %}
+  # `col :x_id, belongs_to: :x`: the model again with the column typed as a
+  # reference to x's table and its index (unless `index: false`).
+  model {{name}} do
+    {% for e in exprs %}
+      {% bt = e.is_a?(Call) && e.name == "col" && e.args.size == 1 && e.named_args && e.named_args.find { |na| na.name.stringify == "belongs_to" } %}
+      {% if bt %}
+        {% bcn = e.named_args.find { |na| na.name.stringify == "class_name" } %}
+        {% tt = e.named_args.find { |na| na.name.stringify == "to_table" || na.name.stringify == "to" } %}
+        {% ix = e.named_args.find { |na| na.name.stringify == "index" } %}
+        col {{e.args[0]}}, :references, to: {{tt ? tt.value : ((bcn ? bcn.value.id.stringify.underscore : bt.value.id.stringify) + "s").id.symbolize}}, {{e.named_args.reject { |na| ["index", "to_table", "to"].includes?(na.name.stringify) }.map { |na| "#{na.name}: #{na.value}" }.join(", ").id}}, index: false
+        {% unless ix && !ix.value %}
+          index {{e.args[0]}}
+        {% end %}
+      {% else %}
+        {{e}}
+      {% end %}
+    {% end %}
+  end
+  {% elsif expand_timestamps %}
   # `cols :timestamps`: the model again with its two columns and the marker
   # that turns the stamping on.
   model {{name}} do
@@ -308,6 +349,8 @@ pub macro model(name, &block)
     PRIMARY = "id"
     COLUMNS = ["id", {% for c in cols %}{{c.args[0].id.stringify}}, {% end %}]
     MODEL_ID = 0
+    # belongs_to columns, then has_many/has_one, in declaration order.
+    ASSOCIATION_COUNT = {{assocs.size}}
     # Which columns are BLOBs: they bind as hex text through `unhex(?)`.
     BLOB_COLUMNS = [false, {% for c in cols %}{{types[c.args[1].id.stringify] == "::Ricord::Blob::Blob"}}, {% end %}]
 
@@ -350,6 +393,12 @@ pub macro model(name, &block)
         {% iname = ix.named_args && ix.named_args.find { |na| na.name.stringify == "name" } %}
         {% ixn = iname ? iname.value : "index_" + table + "_on_" + icols.map(&.id).join("_") %}
         session.run("CREATE #{ {{unique ? true : false}} ? "UNIQUE " : "" }INDEX IF NOT EXISTS `" + {{ixn}} + "` ON `{{table.id}}` (`{{icols.map(&.id).join("`, `").id}}`)")!
+      {% end %}
+      # A typed `belongs_to` column's index (the untyped form declares it).
+      {% for c in cols %}
+        {% if c.named_args && c.named_args.any? { |na| na.name.stringify == "belongs_to" } && !c.named_args.any? { |na| na.name.stringify == "index" && !na.value } %}
+          session.run("CREATE INDEX IF NOT EXISTS `index_{{table.id}}_on_{{c.args[0].id}}` ON `{{table.id}}` (`{{c.args[0].id}}`)")!
+        {% end %}
       {% end %}
       nil
     end
@@ -461,6 +510,11 @@ pub macro model(name, &block)
           {% end %}
           return nil if persisted? && store.slot(index, {{i + 1}}) == given
           store.set_slot(index, {{i + 1}}, given)
+          {% for a, ai in assocs %}
+            {% if a[0] == "belongs_to" && a[4] == i + 1 %}
+              ::Ricord::Associations.unload(store, index, {{ai}})
+            {% end %}
+          {% end %}
           nil
         end
       {% end %}
@@ -854,7 +908,7 @@ pub macro model(name, &block)
 
     def self.new(db : ::Ricord::Sessions::Db, *, {% for c in cols %}{% t = types[c.args[1].id.stringify] %}{{c.args[0].id}} : {% if t == "::Ricord::Json::Json" %}String{% elsif t == "::Ricord::Blob::Blob" %}::Std::Slice::Bytes{% else %}{{t.id}}{% end %}{% if t == "Int64" %} | Int32{% end %} | Nil | ::Ricord::Values::Skip = ::Ricord::Values::SKIP, {% end %}) : {{name.id}}
       session = db.session
-      index = session.store.add_record(MODEL_ID, COLUMNS.size, 0)
+      index = session.store.add_record(MODEL_ID, COLUMNS.size, ASSOCIATION_COUNT)
       record = {{name.id}}.new(session, session.store, index)
       {% for c, i in cols %}
         {% cn = c.args[0].id %}
@@ -890,7 +944,32 @@ pub macro model(name, &block)
       getter limit_value : Int64 | Nil
       getter offset_value : Int64 | Nil
 
-      def initialize(@session : ::Ricord::Sessions::Session, @last_where : Int32, @last_order : Int32, @limit_value : Int64 | Nil, @offset_value : Int64 | Nil)
+      # `includes` has a bit per association index to preload after the read.
+      # A query made by a has_many reader names its owner record, the owner's
+      # association index and this model's foreign-key column; `bare` is true
+      # until a call narrows it, and only a bare one reads and fills the
+      # owner's loaded range.
+      getter includes : Int64
+      getter owner : Int32
+      getter owner_assoc : Int32
+      getter owner_fk : Int32
+      getter bare : Bool
+
+      def initialize(@session : ::Ricord::Sessions::Session, @last_where : Int32, @last_order : Int32, @limit_value : Int64 | Nil, @offset_value : Int64 | Nil, @includes : Int64 = 0_i64, @owner : Int32 = -1, @owner_assoc : Int32 = -1, @owner_fk : Int32 = -1, @bare : Bool = false)
+      end
+
+      private def chain(last_where : Int32, last_order : Int32, limit_value : Int64 | Nil, offset_value : Int64 | Nil) : Query
+        Query.new(session, last_where, last_order, limit_value, offset_value, @includes, @owner, @owner_assoc, @owner_fk, false)
+      end
+
+      # Preloads the named associations of the records this query reads.
+      def includes(*names : Symbol) : Query
+        bits = @includes
+        names.each do |n|
+          a = {{name.id}}.association_index(n)
+          bits |= 1_i64 << a if a >= 0
+        end
+        Query.new(session, @last_where, @last_order, @limit_value, @offset_value, bits, @owner, @owner_assoc, @owner_fk, @bare)
       end
 
       # A typed condition per column given; `Array` is IN, `Range` is between.
@@ -904,32 +983,32 @@ pub macro model(name, &block)
 
       private def where_any(op : UInt8, **conds) : Query
         node = ::Ricord::Model.where_conds(session.store, op, @last_where, conds)
-        Query.new(session, node, @last_order, @limit_value, @offset_value)
+        chain(node, @last_order, @limit_value, @offset_value)
       end
 
       # A raw condition with `?` binds.
       def where(sql : String, *binds) : Query
         node = ::Ricord::Model.where_raw(session.store, @last_where, sql, binds)
-        Query.new(session, node, @last_order, @limit_value, @offset_value)
+        chain(node, @last_order, @limit_value, @offset_value)
       end
 
       def order(*cols : Symbol) : Query
-        Query.new(session, @last_where, ::Ricord::Model.order_cols(session.store, @last_order, COLUMNS, cols), @limit_value, @offset_value)
+        chain(@last_where, ::Ricord::Model.order_cols(session.store, @last_order, COLUMNS, cols), @limit_value, @offset_value)
       end
 
       def order(**cols) : Query
-        Query.new(session, @last_where, ::Ricord::Model.order_dirs(session.store, @last_order, COLUMNS, cols), @limit_value, @offset_value)
+        chain(@last_where, ::Ricord::Model.order_dirs(session.store, @last_order, COLUMNS, cols), @limit_value, @offset_value)
       end
 
       def limit(n : Int64 | Int32) : Query
-        Query.new(session, @last_where, @last_order, n.to_i64, @offset_value)
+        chain(@last_where, @last_order, n.to_i64, @offset_value)
       end
 
       def offset(n : Int64 | Int32) : Query
-        Query.new(session, @last_where, @last_order, @limit_value, n.to_i64)
+        chain(@last_where, @last_order, @limit_value, n.to_i64)
       end
 
-      def build(selection : String, sql : String::Builder, args : Array(::Db::Value::DBValue), flip : Bool = false) : Nil
+      def build_sql(selection : String, sql : String::Builder, args : Array(::Db::Value::DBValue), flip : Bool = false) : Nil
         sql << "SELECT " << selection << " FROM `" << TABLE << '`'
         ::Ricord::Model.where_sql(session.store, @last_where, sql, args, session.dialect)
         ::Ricord::Model.order_sql(session.store, @last_order, COLUMNS, sql, flip)
@@ -937,12 +1016,43 @@ pub macro model(name, &block)
         nil
       end
 
+      # The rows as records, read as one load group. A bare has_many query whose
+      # owner's range is loaded reads the range instead and runs no query.
       def to_a : Array({{name.id}}) | ::Ricord::Failures::DatabaseError
+        s = session
+        if @bare && @owner >= 0 && ::Ricord::Associations.loaded?(s.store, @owner, @owner_assoc)
+          cached = [] of {{name.id}}
+          start = ::Ricord::Associations.range_start(s.store, @owner, @owner_assoc)
+          ::Ricord::Associations.range_count(s.store, @owner, @owner_assoc).times { |k| cached << {{name.id}}.new(s, s.store, s.store.links[start + k]) }
+          return cached
+        end
+        first = s.store.size
+        count = read_rows
+        return count if count.is_a?(::Ricord::Failures::DatabaseError)
+        # The preloads run before the result array exists: a loader reads
+        # through another model's query, which may come back here.
+        if count > 0 && @includes != 0_i64
+          ASSOCIATION_COUNT.times do |a|
+            if (@includes & (1_i64 << a)) != 0_i64
+              loaded = {{name.id}}.__preload(s, first, count, a)
+              return loaded if loaded.is_a?(::Ricord::Failures::DatabaseError)
+            end
+          end
+        end
+        records = [] of {{name.id}}
+        count.times { |k| records << {{name.id}}.new(s, s.store, first + k) }
+        records
+      end
+
+      # Reads the rows into consecutive store records as one load group (a
+      # bare has_many query also fills its owner's range): the row count.
+      # No preloads.
+      def read_rows : Int32 | ::Ricord::Failures::DatabaseError
+        s = session
         sql = String::Builder.new
         args = [] of ::Db::Value::DBValue
-        build(COLUMNS.map { |c| "`#{c}`" }.join(", "), sql, args)
-        s = session
-        records = [] of {{name.id}}
+        build_sql(COLUMNS.map { |c| "`#{c}`" }.join(", "), sql, args)
+        first = s.store.size
         failed = s.query(sql.to_s, args) do |rs|
           problem = nil
           while true
@@ -952,15 +1062,21 @@ pub macro model(name, &block)
               break
             end
             break unless m
-            index = s.store.add_record(MODEL_ID, COLUMNS.size, 0)
+            index = s.store.add_record(MODEL_ID, COLUMNS.size, ASSOCIATION_COUNT)
             read = {{name.id}}.read_row(s.store, index, rs, s.dialect)
             problem = read if read.is_a?(::Ricord::Failures::DatabaseError)
-            records << {{name.id}}.new(s, s.store, index)
           end
           problem
         end
         return failed if failed.is_a?(::Ricord::Failures::DatabaseError)
-        records
+        count = s.store.size - first
+        ::Ricord::Associations.mark_group(s.store, first, count)
+        if @bare && @owner >= 0
+          start = s.store.links.size
+          count.times { |k| s.store.links << first + k }
+          ::Ricord::Associations.set_range(s.store, @owner, @owner_assoc, start, count)
+        end
+        count
       end
 
       def all : Array({{name.id}}) | ::Ricord::Failures::DatabaseError
@@ -973,14 +1089,14 @@ pub macro model(name, &block)
         query = query.limit(1)
         sql = String::Builder.new
         args = [] of ::Db::Value::DBValue
-        query.build(COLUMNS.map { |c| "`#{c}`" }.join(", "), sql, args, flip)
+        query.build_sql(COLUMNS.map { |c| "`#{c}`" }.join(", "), sql, args, flip)
         s = session
         s.query(sql.to_s, args) do |rs|
           m = ::Ricord::Model.advance(rs, TABLE)
           if m.is_a?(::Ricord::Failures::DatabaseError)
             m
           elsif m
-            index = s.store.add_record(MODEL_ID, COLUMNS.size, 0)
+            index = s.store.add_record(MODEL_ID, COLUMNS.size, ASSOCIATION_COUNT)
             read = {{name.id}}.read_row(s.store, index, rs, s.dialect)
             read.is_a?(::Ricord::Failures::DatabaseError) ? read : index
           else
@@ -1023,11 +1139,11 @@ pub macro model(name, &block)
         sql = String::Builder.new
         args = [] of ::Db::Value::DBValue
         if @limit_value.nil? && @offset_value.nil?
-          build("count(*)", sql, args)
+          build_sql("count(*)", sql, args)
         else
           # A limit or offset bounds the rows counted, so count a subquery.
           inner = String::Builder.new
-          build("1", inner, args)
+          build_sql("1", inner, args)
           sql << "SELECT count(*) FROM (" << inner.to_s << ')'
         end
         session.scalar(sql.to_s, Int64, args)
@@ -1038,7 +1154,7 @@ pub macro model(name, &block)
       def exists? : Bool | ::Ricord::Failures::DatabaseError
         sql = String::Builder.new
         args = [] of ::Db::Value::DBValue
-        limit(1).build("1", sql, args)
+        limit(1).build_sql("1", sql, args)
         session.query(sql.to_s, args) do |rs|
           m = ::Ricord::Model.advance(rs, TABLE)
           m.is_a?(::Ricord::Failures::DatabaseError) ? m : m
@@ -1054,12 +1170,26 @@ pub macro model(name, &block)
         found.is_a?(::Ricord::Failures::DatabaseError) ? found : !found
       end
 
-      def new(**attrs) : {{name.id}}
-        {{name.id}}.new(session, **attrs)
+      # A new unsaved record. Through a has_many query the foreign key is set
+      # to the owner's id, and the owner's loaded range is dropped so the next
+      # read sees the record. Named `build`, not `new`: ris treats an instance
+      # method `new` as in-place construction, which may not grow the store.
+      def build(**attrs) : {{name.id}}
+        index = {{name.id}}.new(session, **attrs).index
+        if @owner >= 0
+          session.store.set_slot(index, @owner_fk, session.store.slot(@owner, 0))
+          ::Ricord::Associations.unload(session.store, @owner, @owner_assoc)
+        end
+        {{name.id}}.new(session, session.store, index)
       end
 
       def create(**attrs) : {{name.id}} | ::Ricord::Failures::Error
-        {{name.id}}.new(session, **attrs).save
+        build(**attrs).save
+      end
+
+      # The number of rows, as `count`.
+      def size : Int64 | ::Ricord::Failures::DatabaseError
+        count
       end
     end
 
@@ -1073,6 +1203,144 @@ pub macro model(name, &block)
         -1
       end
     end
+
+    # The index of a named association, -1 for none.
+    def self.association_index(assoc : Symbol) : Int32
+      {% for a, ai in assocs %}
+        return {{ai}} if assoc == {{a[1].symbolize}}
+      {% end %}
+      -1
+    end
+
+    # Loads association *assoc* for the group records first ... first + count - 1.
+    def self.__preload(session : ::Ricord::Sessions::Session, first : Int32, count : Int32, assoc : Int32) : Nil | ::Ricord::Failures::DatabaseError
+      {% for a, ai in assocs %}
+        return __load_{{a[1]}}(session, first, count) if assoc == {{ai}}
+      {% end %}
+      nil
+    end
+
+    {% for a, ai in assocs %}
+      {% kind = a[0] %}
+      {% an = a[1] %}
+      {% target = a[2] %}
+      {% fk = a[3] %}
+      {% if kind == "belongs_to" %}
+        {% fci = a[4] %}
+        {% fcol = cols[fci - 1] %}
+        {% fnull = fcol.named_args && fcol.named_args.any? { |na| na.name.stringify == "null" && na.value } %}
+        # belongs_to {{an}}: the {{target}} named by {{fk}}, loaded for the whole
+        # load group on first access.
+        def {{an}} : {{target}} | Nil | ::Ricord::Failures::DatabaseError
+          unless ::Ricord::Associations.loaded?(store, index, {{ai}})
+            first = ::Ricord::Associations.group_first(store, index)
+            loaded = {{name.id}}.__load_{{an}}(session, first, ::Ricord::Associations.group_size(store, first))
+            return loaded if loaded.is_a?(::Ricord::Failures::DatabaseError)
+          end
+          t = ::Ricord::Associations.one(store, index, {{ai}})
+          t < 0 ? nil : {{target}}.new(session, store, t)
+        end
+
+        # Sets {{fk}} to the other record's id; the association then reads it.
+        def {{an}}=(other : {{target}}{% if fnull %} | Nil{% end %}) : Nil
+          {% if fnull %}
+            if other.nil?
+              self.{{fk}} = nil
+              ::Ricord::Associations.set_one(store, index, {{ai}}, -1)
+              return nil
+            end
+          {% end %}
+          self.{{fk}} = other.id
+          if other.store == store
+            ::Ricord::Associations.set_one(store, index, {{ai}}, other.index)
+          end
+          nil
+        end
+
+        def self.__load_{{an}}(session : ::Ricord::Sessions::Session, first : Int32, count : Int32) : Nil | ::Ricord::Failures::DatabaseError
+          store = session.store
+          keys = [] of Int64
+          ::Ricord::Associations.group_keys(store, first, count, {{ai}}, {{fci}}, keys)
+          targets = [] of Int32
+          i = 0
+          while i < keys.size
+            chunk = [] of Int64
+            while i < keys.size && chunk.size < ::Ricord::Associations::CHUNK
+              chunk << keys[i]
+              i += 1
+            end
+            at = store.size
+            rows = {{target}}[session].where(id: chunk).read_rows
+            return rows if rows.is_a?(::Ricord::Failures::DatabaseError)
+            rows.times { |k| targets << at + k }
+          end
+          ::Ricord::Associations.link_group(store, first, count, {{ai}}, {{fci}}, targets, 0)
+          nil
+        end
+      {% elsif kind == "has_one" %}
+        # has_one {{an}}: the {{target}} whose {{fk}} is this id, loaded for the
+        # whole load group on first access.
+        def {{an}} : {{target}} | Nil | ::Ricord::Failures::DatabaseError
+          unless ::Ricord::Associations.loaded?(store, index, {{ai}})
+            first = ::Ricord::Associations.group_first(store, index)
+            loaded = {{name.id}}.__load_{{an}}(session, first, ::Ricord::Associations.group_size(store, first))
+            return loaded if loaded.is_a?(::Ricord::Failures::DatabaseError)
+          end
+          t = ::Ricord::Associations.one(store, index, {{ai}})
+          t < 0 ? nil : {{target}}.new(session, store, t)
+        end
+
+        def self.__load_{{an}}(session : ::Ricord::Sessions::Session, first : Int32, count : Int32) : Nil | ::Ricord::Failures::DatabaseError
+          store = session.store
+          keys = [] of Int64
+          ::Ricord::Associations.group_keys(store, first, count, {{ai}}, 0, keys)
+          targets = [] of Int32
+          i = 0
+          while i < keys.size
+            chunk = [] of Int64
+            while i < keys.size && chunk.size < ::Ricord::Associations::CHUNK
+              chunk << keys[i]
+              i += 1
+            end
+            at = store.size
+            rows = {{target}}[session].where({{fk}}: chunk).order(:id).read_rows
+            return rows if rows.is_a?(::Ricord::Failures::DatabaseError)
+            rows.times { |k| targets << at + k }
+          end
+          ::Ricord::Associations.link_group(store, first, count, {{ai}}, 0, targets, {{target}}.column_index({{fk.symbolize}}))
+          nil
+        end
+      {% else %}
+        # has_many {{an}}: the {{target}} rows whose {{fk}} is this id, as a query.
+        def {{an}} : {{target}}::Query
+          q = {{target}}[session].where({{fk}}: id)
+          {{target}}::Query.new(session, q.last_where, -1, nil, nil, 0_i64, index, {{ai}}, {{target}}.column_index({{fk.symbolize}}), true)
+        end
+
+        # `includes(:{{an}})`: every owner's children in one query per 1,000
+        # owners, ordered by {{fk}}, id so each owner's children are contiguous.
+        def self.__load_{{an}}(session : ::Ricord::Sessions::Session, first : Int32, count : Int32) : Nil | ::Ricord::Failures::DatabaseError
+          store = session.store
+          keys = [] of Int64
+          ::Ricord::Associations.group_keys(store, first, count, {{ai}}, 0, keys)
+          children = [] of Int32
+          i = 0
+          while i < keys.size
+            chunk = [] of Int64
+            while i < keys.size && chunk.size < ::Ricord::Associations::CHUNK
+              chunk << keys[i]
+              i += 1
+            end
+            at = store.size
+            rows = {{target}}[session].where({{fk}}: chunk).order({{fk.symbolize}}, :id).read_rows
+            return rows if rows.is_a?(::Ricord::Failures::DatabaseError)
+            rows.times { |k| children << at + k }
+          end
+          ::Ricord::Associations.link_children(store, first, count, {{ai}}, children, {{target}}.column_index({{fk.symbolize}}))
+          nil
+        end
+      {% end %}
+    {% end %}
 
     {% for d in defs %}
       {{d}}

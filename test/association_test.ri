@@ -1,0 +1,205 @@
+# M3: belongs_to readers and writers, has_many queries with new/create through
+# them, has_one, class_name and foreign_key.
+module test/association_test
+
+import db/db/spec::{describe, it}
+import ricord
+import ricord/model::{model}
+import ricord/sessions::{Session}
+import ricord/failures::{RecordNotFound, RecordInvalid, DatabaseError}
+import test/spec_helper::*
+import test/models::*
+
+model Author do
+  table :authors
+  col :name, :string
+  has_many :books
+end
+
+model Book do
+  table :books
+  col :author_id, belongs_to: :author, null: true
+  col :title, :string, null: true
+  validates :title, presence: true
+end
+
+def with_books(& : Session -> Nil) : Nil
+  with_db do |db|
+    Author.create_table(db).or_panic
+    Book.create_table(db).or_panic
+    db.release
+    yield db
+  end
+end
+
+def selects_since(db : Session, start : Int32) : Int32
+  n = 0
+  db.statements.each_with_index { |s, i| n += 1 if i >= start && s.starts_with?("SELECT") }
+  n
+end
+
+# The declared reader types: these only compile when the readers return them.
+def takes_account(value : Account | Nil | DatabaseError) : Bool
+  true
+end
+
+def takes_courts(value : Court::Query) : Bool
+  true
+end
+
+def takes_profile(value : Profile | Nil | DatabaseError) : Bool
+  true
+end
+
+describe "associations" do
+  it "reads and writes a belongs_to" do
+    with_db do |db|
+      a = Account.create(db, name: "a").or_panic
+      b = Account.create(db, name: "b").or_panic
+      court = Court.new(db, name: "x")
+      assert court.account.or_panic.nil?
+      court.account = a
+      assert court.account_id == a.id
+      assert court.account_id_changed?, "the writer marks the foreign key changed"
+      start = db.statements.size
+      linked = court.account.or_panic
+      assert (linked ? linked.name : "") == "a"
+      assert selects_since(db, start) == 0, "an assigned record is read from the store"
+      court.save.or_panic
+      assert !court.account_id_changed?
+      court.account_id = b.id
+      moved = court.account.or_panic
+      assert (moved ? moved.name : "") == "b", "a new key reads the new record"
+      court.account = nil
+      assert court.account_id.nil?
+      assert court.account.or_panic.nil?
+      court.save.or_panic
+      assert Court[db].find(court.id).or_panic.account_id.nil?
+      assert takes_account(court.account)
+    end
+  end
+
+  it "reads a has_many as a query limited by the foreign key" do
+    with_db do |db|
+      teacher = Account.create(db, name: "teacher").or_panic
+      other = Account.create(db, name: "other").or_panic
+      k1 = Court.create(db, name: "Test class X", account_id: teacher.id, rank: 1).or_panic
+      k2 = Court.create(db, name: "Test class X2", account_id: teacher.id, rank: 1).or_panic
+      k3 = Court.create(db, name: "Different", account_id: teacher.id, rank: 2).or_panic
+      stranger = Court.create(db, name: "Elsewhere", account_id: other.id).or_panic
+      Court.create(db, name: "No account").or_panic
+      assert teacher.courts.count.or_panic == 3_i64
+      assert teacher.courts.size.or_panic == 3_i64
+      assert teacher.courts.where(rank: 1).order(id: :desc).to_a.or_panic.map(&.id) == [k2.id, k1.id]
+      assert teacher.courts.where("name LIKE ?", "Test%").order(id: :desc).to_a.or_panic.map(&.id) == [k2.id, k1.id]
+      found = teacher.courts.find_by(name: "Different").or_panic
+      assert (found ? found.id : 0_i64) == k3.id
+      assert teacher.courts.find_by(name: "not_found").or_panic.nil?
+      assert teacher.courts.find(k1.id).or_panic.name == "Test class X"
+      assert teacher.courts.find(stranger.id).is_a?(RecordNotFound), "another owner's row is not found"
+      first = teacher.courts.first.or_panic
+      last = teacher.courts.last.or_panic
+      assert (first ? first.id : 0_i64) == k1.id
+      assert (last ? last.id : 0_i64) == k3.id
+      assert teacher.courts.limit(2).to_a.or_panic.size == 2
+      assert teacher.courts.exists?.or_panic
+      assert teacher.courts.any?.or_panic
+      lonely = Account.create(db, name: "lonely").or_panic
+      assert lonely.courts.empty?.or_panic
+      assert lonely.courts.count.or_panic == 0_i64
+      assert lonely.courts.to_a.or_panic.empty?
+      assert takes_courts(teacher.courts)
+    end
+  end
+
+  it "answers a loaded has_many from the store" do
+    with_db do |db|
+      owner = Account.create(db, name: "o").or_panic
+      2.times { |i| Court.create(db, name: "c#{i}", account_id: owner.id).or_panic }
+      assert owner.courts.to_a.or_panic.size == 2
+      start = db.statements.size
+      assert owner.courts.to_a.or_panic.map(&.name) == ["c0", "c1"]
+      assert selects_since(db, start) == 0
+      assert owner.courts.where(name: "c1").to_a.or_panic.size == 1, "a narrowed query runs its SQL"
+      assert selects_since(db, start) == 1
+    end
+  end
+
+  it "builds and creates through a has_many with the foreign key set" do
+    with_books do |db|
+      author = Author.create(db, name: "Jane").or_panic
+      post = author.books.build(title: "New Post")
+      assert post.title == "New Post"
+      assert post.author_id == author.id
+      assert post.new_record?
+      assert Book[db].where(author_id: author.id).count.or_panic == 0_i64, "new does not persist"
+      created = author.books.create(title: "Published").or_panic
+      assert created.author_id == author.id
+      assert !created.new_record?
+      assert Book[db].where(author_id: author.id).count.or_panic == 1_i64
+      invalid = author.books.build
+      assert invalid.save.is_a?(RecordInvalid)
+      assert !invalid.errors.empty?
+      assert author.books.create.is_a?(RecordInvalid)
+      assert Book[db].where(author_id: author.id).count.or_panic == 1_i64
+    end
+  end
+
+  it "sees a record created through a loaded has_many" do
+    with_books do |db|
+      author = Author.create(db, name: "A").or_panic
+      author.books.create(title: "one").or_panic
+      assert author.books.to_a.or_panic.size == 1
+      author.books.create(title: "two").or_panic
+      assert author.books.to_a.or_panic.map(&.title) == ["one", "two"]
+      book = Book[db].find_by(title: "two").or_panic
+      if book
+        owner = book.author.or_panic
+        assert (owner ? owner.name : "") == "A"
+      end
+    end
+  end
+
+  it "reads a has_one, nil when there is none" do
+    with_db do |db|
+      account = Account.create(db, name: "a").or_panic
+      empty = Account.create(db, name: "b").or_panic
+      Profile.create(db, account_id: account.id, bio: "hello").or_panic
+      profile = account.profile.or_panic
+      assert (profile ? profile.bio : "") == "hello"
+      assert empty.profile.or_panic.nil?
+      assert takes_profile(account.profile)
+      court = Court.create(db, name: "c").or_panic
+      assert court.lead_case.or_panic.nil?
+      Case.create(db, court_id: court.id, title: "first").or_panic
+      Case.create(db, court_id: court.id, title: "second").or_panic
+      again = Court[db].find(court.id).or_panic
+      lead = again.lead_case.or_panic
+      assert (lead ? lead.title : "") == "first", "class_name and foreign_key name the target"
+    end
+  end
+
+  it "reads and writes through a foreign_key and class_name" do
+    with_db do |db|
+      user = User.create(db, email: "u@x").or_panic
+      profile = Profile.new(db, bio: "p")
+      profile.owner = user
+      assert profile.owner_id == user.id
+      profile.save.or_panic
+      found = User[db].find(user.id).or_panic.profile.or_panic
+      assert (found ? found.bio : "") == "p"
+      owner = Profile[db].find(profile.id).or_panic.owner.or_panic
+      assert (owner ? owner.email : "") == "u@x"
+      assert db.statements.any?(&.includes?("`owner_id` IN (?)"))
+    end
+  end
+
+  it "indexes a belongs_to column unless index: false" do
+    with_db do |db|
+      assert db.statements.any?(&.includes?("CREATE INDEX IF NOT EXISTS `index_courts_on_account_id` ON `courts` (`account_id`)"))
+      assert db.statements.any?(&.includes?("REFERENCES `accounts`(`id`) ON DELETE CASCADE"))
+      assert !db.statements.any?(&.includes?("index_profiles_on_account_id"))
+      assert db.statements.any?(&.includes?("index_profiles_on_owner_id"))
+    end
+  end
+end

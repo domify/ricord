@@ -7,22 +7,26 @@ import ricord/model::{model}
 model Account do
   table :accounts
   col :name, :string
+  has_many :courts
+  has_one :profile
 end
 
 model Court do
   table :courts
-  col :account_id, :references, to: :accounts, on_delete: :cascade, null: true
+  col :account_id, belongs_to: :account, on_delete: :cascade, null: true
   col :name, :string
   col :rank, :integer, null: true
   col :score, :float, null: true
   col :active, :boolean, default: true
   col :opened_at, :datetime, null: true
   index :name, unique: true
+  has_many :cases
+  has_one :lead_case, class_name: Case, foreign_key: :court_id
 end
 
 model Case do
   table :cases
-  col :court_id, :references, to: :courts, on_delete: :restrict
+  col :court_id, belongs_to: :court, on_delete: :restrict
   col :title, :string
 end
 
@@ -30,6 +34,14 @@ model User do
   table :users
   col :email, :string
   col :admin, :boolean, default: false
+  has_one :profile, foreign_key: :owner_id
+end
+
+model Profile do
+  table :profiles
+  col :account_id, belongs_to: :account, null: true, index: false
+  col :owner_id, :int64, belongs_to: :owner, class_name: User, null: true
+  col :bio, :string
 end
 
 model Setting do

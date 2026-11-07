@@ -1,0 +1,236 @@
+# M3: load groups. belongs_to and has_one load for every record read by the same
+# query with one IN query; has_many takes one query with includes, one per owner
+# without. Statement counts come from the session's log.
+module test/group_loading_test
+
+import db/db/spec::{describe, it}
+import ricord
+import ricord/model::{model}
+import ricord/sessions::{Session}
+import ricord/failures::{RecordNotFound}
+import test/spec_helper::*
+import test/models::*
+
+# The SELECT statements logged since entry *start*.
+def selects_since(db : Session, start : Int32) : Int32
+  n = 0
+  db.statements.each_with_index { |s, i| n += 1 if i >= start && s.starts_with?("SELECT") }
+  n
+end
+
+# The statements logged since entry *start*.
+def since(db : Session, start : Int32) : Array(String)
+  all = db.statements
+  out = [] of String
+  all.each_with_index { |s, i| out << s if i >= start }
+  out
+end
+
+describe "group loading" do
+  it "reads 50 courts' accounts in two queries" do
+    with_db do |db|
+      10.times { |i| Account.create(db, name: "a#{i}").or_panic }
+      50.times { |i| Court.create(db, name: "c#{i}", account_id: (i % 10) + 1).or_panic }
+      Court.create(db, name: "orphan").or_panic
+      start = db.statements.size
+      courts = Court[db].order(:id).to_a.or_panic
+      names = [] of String
+      courts.each do |c|
+        account = c.account.or_panic
+        names << (account ? account.name : "-")
+      end
+      assert selects_since(db, start) == 2, "one query for the courts, one for all their accounts"
+      assert names.size == 51
+      assert names[0] == "a0"
+      assert names[13] == "a3"
+      assert names[50] == "-", "a nil key loads as nil"
+      assert db.statements.any?(&.includes?("`id` IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")), "ten distinct keys, one bind each"
+      again = db.statements.size
+      courts.each { |c| c.account.or_panic }
+      assert selects_since(db, again) == 0, "later reads come from the store"
+    end
+  end
+
+  it "treats a record found alone as a group of one" do
+    with_db do |db|
+      a = Account.create(db, name: "a").or_panic
+      b = Account.create(db, name: "b").or_panic
+      Court.create(db, name: "x", account_id: a.id).or_panic
+      Court.create(db, name: "y", account_id: b.id).or_panic
+      start = db.statements.size
+      x = Court[db].find(1).or_panic
+      y = Court[db].find(2).or_panic
+      xa = x.account.or_panic
+      assert (xa ? xa.name : "") == "a"
+      assert selects_since(db, start) == 3
+      ya = y.account.or_panic
+      assert (ya ? ya.name : "") == "b"
+      assert selects_since(db, start) == 4, "the other find is its own group"
+      first = Court[db].where(name: "y").first.or_panic
+      assert !first.nil?
+      if first
+        fa = first.account.or_panic
+        assert (fa ? fa.name : "") == "b"
+      end
+      assert selects_since(db, start) == 6, "first is a group of one too"
+    end
+  end
+
+  it "loads a has_one for the whole group" do
+    with_db do |db|
+      3.times { |i| Account.create(db, name: "a#{i}").or_panic }
+      Profile.create(db, account_id: 1, bio: "one").or_panic
+      Profile.create(db, account_id: 3, bio: "three").or_panic
+      start = db.statements.size
+      accounts = Account[db].order(:id).to_a.or_panic
+      bios = accounts.map { |a| p = a.profile.or_panic; p ? p.bio : "-" }
+      assert bios == ["one", "-", "three"]
+      assert selects_since(db, start) == 2
+    end
+  end
+
+  it "reads has_many with includes in two queries, without it one per owner" do
+    with_db do |db|
+      4.times { |i| Account.create(db, name: "a#{i}").or_panic }
+      # Interleaved ids, so each owner's children are not adjacent rows.
+      9.times { |i| Court.create(db, name: "c#{i}", account_id: (i % 3) + 1).or_panic }
+      start = db.statements.size
+      counts = [] of Int32
+      Account[db].order(:id).to_a.or_panic.each { |a| counts << a.courts.to_a.or_panic.size }
+      assert counts == [3, 3, 3, 0]
+      assert selects_since(db, start) == 5, "one for the owners, one per owner"
+
+      start = db.statements.size
+      accounts = Account[db].order(:id).includes(:courts).to_a.or_panic
+      assert selects_since(db, start) == 2
+      names = accounts.map { |a| a.courts.to_a.or_panic.map(&.name).join(",") }
+      assert names == ["c0,c3,c6", "c1,c4,c7", "c2,c5,c8", ""]
+      assert selects_since(db, start) == 2, "the preloaded children need no query"
+      assert db.statements.any?(&.includes?("ORDER BY `account_id`, `id`"))
+    end
+  end
+
+  it "preloads belongs_to and has_one through includes at once" do
+    with_db do |db|
+      2.times { |i| Account.create(db, name: "a#{i}").or_panic }
+      Court.create(db, name: "x", account_id: 2).or_panic
+      Court.create(db, name: "y", account_id: 1).or_panic
+      Profile.create(db, account_id: 2, bio: "two").or_panic
+      start = db.statements.size
+      courts = Court[db].order(:id).includes(:account).to_a.or_panic
+      assert selects_since(db, start) == 2
+      xa = courts[0].account.or_panic
+      assert (xa ? xa.name : "") == "a1"
+      accounts = Account[db].order(:id).includes(:profile, :courts).to_a.or_panic
+      assert selects_since(db, start) == 5
+      p1 = accounts[1].profile.or_panic
+      assert (p1 ? p1.bio : "") == "two"
+      assert accounts[0].profile.or_panic.nil?
+      assert accounts[0].courts.to_a.or_panic.map(&.name) == ["y"]
+      assert selects_since(db, start) == 5
+    end
+  end
+
+  it "groups the children read through a has_many for their own associations" do
+    with_db do |db|
+      Account.create(db, name: "a").or_panic
+      2.times { |i| Court.create(db, name: "c#{i}", account_id: 1).or_panic }
+      4.times { |i| Case.create(db, court_id: (i % 2) + 1, title: "t#{i}").or_panic }
+      account = Account[db].find(1).or_panic
+      start = db.statements.size
+      cases = Case[db].order(:id).to_a.or_panic
+      titles = cases.map { |k| c = k.court.or_panic; c ? c.name : "-" }
+      assert titles == ["c0", "c1", "c0", "c1"]
+      courts = account.courts.includes(:cases).to_a.or_panic
+      assert courts[1].cases.to_a.or_panic.map(&.title) == ["t1", "t3"]
+      assert selects_since(db, start) == 4
+    end
+  end
+
+  it "splits the keys into IN queries of at most 1,000" do
+    with_db do |db|
+      db.write do |tx|
+        1001.times { |i| Account.create(tx, name: "a#{i}").or_panic }
+        1001.times { |i| Court.create(tx, name: "c#{i}", account_id: i + 1).or_panic }
+        nil
+      end.or_panic
+      start = db.statements.size
+      courts = Court[db].order(:id).to_a.or_panic
+      last = courts[1000].account.or_panic
+      assert (last ? last.name : "") == "a1000"
+      assert selects_since(db, start) == 3, "1,001 keys take two IN queries"
+    end
+  end
+
+  # grant_perf_w6_primary_key_lookup_keys / _clauses / statement_count_create_find.
+  it "finds by primary key with one SELECT, again and again" do
+    with_db do |db|
+      plain = Court.create(db, name: "p").or_panic
+      start = db.statements.size
+      3.times { assert Court[db].find(plain.id).or_panic.name == "p" }
+      assert Court[db].find(plain.id.to_i32).or_panic.name == "p", "an Int32 key works"
+      assert selects_since(db, start) == 4
+      sql = [] of String
+      db.statements.each_with_index { |s, i| sql << s if i >= start && s.starts_with?("SELECT") }
+      assert sql[0] == sql[1], "the same statement each time"
+      assert Court[db].find(-1).is_a?(RecordNotFound)
+      db.write do |tx|
+        assert Court[tx].find(plain.id).or_panic.name == "p", "reads inside an open write"
+        nil
+      end.or_panic
+    end
+  end
+
+  it "keeps each chained query's own conditions" do
+    with_db do |db|
+      ["x", "y", "z"].each { |n| Court.create(db, name: n).or_panic }
+      original = Court[db].where(name: ["x", "y"])
+      first = original.where(name: "x")
+      second = original.where(name: "y")
+      assert first.to_a.or_panic.map(&.name) == ["x"]
+      assert second.to_a.or_panic.map(&.name) == ["y"]
+      assert original.order(:name).to_a.or_panic.map(&.name) == ["x", "y"]
+      assert Court[db].count.or_panic == 3_i64
+    end
+  end
+
+  it "runs BEGIN IMMEDIATE, INSERT and COMMIT for a create, UPDATE for a change" do
+    with_db do |db|
+      start = db.statements.size
+      person = Court.create(db, name: "Ada").or_panic
+      sql = since(db, start)
+      assert sql.size == 3
+      assert sql[0] == "BEGIN IMMEDIATE"
+      assert sql[1].starts_with?("INSERT INTO")
+      assert sql[2] == "COMMIT"
+      second = Court.create(db, name: "two").or_panic
+      assert second.id > person.id, "the id comes back without a second query"
+      loaded = Court[db].find(person.id).or_panic
+      db.release
+      loaded.name = "After"
+      start = db.statements.size
+      loaded.save.or_panic
+      sql = since(db, start)
+      assert sql.size == 3
+      assert sql[0] == "BEGIN IMMEDIATE"
+      assert sql[1].starts_with?("UPDATE")
+      assert sql[2] == "COMMIT"
+      assert Court[db].find(person.id).or_panic.name == "After"
+    end
+  end
+
+  it "sends one BEGIN and one COMMIT around several saves" do
+    with_db do |db|
+      start = db.statements.size
+      db.write do |tx|
+        Court.create(tx, name: "a").or_panic
+        Court.create(tx, name: "b").or_panic
+        nil
+      end.or_panic
+      sql = since(db, start)
+      assert sql.count(&.starts_with?("BEGIN")) == 1
+      assert sql.count { |s| s == "COMMIT" } == 1
+      assert sql.count(&.starts_with?("INSERT INTO")) == 2
+    end
+  end
+end

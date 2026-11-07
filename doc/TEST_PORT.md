@@ -19,19 +19,19 @@ completed: M1, M2
 | test/dirty_family_models.ri | drop |  |  | support file, not a test | |
 | test/encryption_codec_regression_test.ri | defer |  |  | encryption is in Future Improvements | |
 | test/grant_adapter_read_tape_test.ri | drop |  |  | adapter and config layer replaced by Ricord.open and the URI scheme | |
-| test/grant_associations_belongs_to_extras_test.ri | port | test/association_test.ri | M3 |  | |
-| test/grant_associations_collection_build_create_test.ri | port | test/association_test.ri | M3 |  | |
-| test/grant_associations_collection_methods_test.ri | port | test/association_test.ri | M3 |  | |
-| test/grant_associations_collection_query_methods_test.ri | port | test/association_test.ri | M3 |  | |
-| test/grant_associations_dependent_delete_all_test.ri | port | test/association_test.ri | M3 |  | |
-| test/grant_associations_has_many_foreign_key_forms_test.ri | port | test/association_test.ri | M3 |  | |
-| test/grant_associations_has_many_test.ri | port | test/association_test.ri | M3 |  | |
-| test/grant_associations_has_many_through_test.ri | port | test/association_test.ri | M3 |  | |
-| test/grant_associations_has_one_test.ri | port | test/association_test.ri | M3 |  | |
-| test/grant_associations_has_one_through_test.ri | port | test/association_test.ri | M3 |  | |
-| test/grant_associations_polymorphic_simple_test.ri | port | test/association_test.ri | M3 |  | |
-| test/grant_associations_w6_collection_finders_test.ri | port | test/association_test.ri | M3 |  | |
-| test/grant_associations_w6_collection_relation_test.ri | port | test/association_test.ri | M3 |  | |
+| test/grant_associations_belongs_to_extras_test.ri | port | test/association_test.ri | M3 | the writer sets the key and marks it changed; belongs_to default:, the required-parent validation and saving an unsaved parent with the child are not in doc/DESIGN.md | x |
+| test/grant_associations_collection_build_create_test.ri | port | test/association_test.ri | M3 | build/create through has_many set the key, an invalid record is returned unsaved with errors, a loaded collection sees a created record; `new` through the association is named `build` (ris treats an instance method `new` as in-place construction, which may not grow the store); block, Hash and Array forms, inverse_of and RecordNotSaved for an unsaved owner are not in doc/DESIGN.md | x |
+| test/grant_associations_collection_methods_test.ri | port | test/association_test.ri | M3 | build/create ported (M3 part A); delete_all/destroy_all through the association wait for the M4 Query methods | |
+| test/grant_associations_collection_query_methods_test.ri | port | test/association_test.ri | M3 | count, size, exists?/any?/empty? on loaded and unloaded associations; default scopes are not in doc/DESIGN.md | x |
+| test/grant_associations_dependent_delete_all_test.ri | port | test/association_test.ri | M3 | dependent: is M3 part B | |
+| test/grant_associations_has_many_foreign_key_forms_test.ri | port | test/association_test.ri | M3 | foreign_key: takes a Symbol; the bare-identifier form is Grant syntax | x |
+| test/grant_associations_has_many_test.ri | port | test/association_test.ri | M3 | count/size, raw where with order, find_by, find; find_by!/find! are find_by/find returning nil/RecordNotFound; a custom primary key is not in doc/DESIGN.md (id is the key) | x |
+| test/grant_associations_has_many_through_test.ri | defer |  |  | has_many :through is in Future Improvements | |
+| test/grant_associations_has_one_test.ri | port | test/association_test.ri | M3 | has_one reader, nil when none, class_name and foreign_key; a has_one writer on the parent and a custom primary key are not in doc/DESIGN.md | x |
+| test/grant_associations_has_one_through_test.ri | defer |  |  | has_one :through is in Future Improvements | |
+| test/grant_associations_polymorphic_simple_test.ri | defer |  |  | polymorphic associations are in Future Improvements | |
+| test/grant_associations_w6_collection_finders_test.ri | port | test/association_test.ri | M3 | first/last with LIMIT, other owners' rows not found, a loaded collection answers without a query; first(n), take, second..forty_two and find(ids) are not in the design's query API; the :through part is in Future Improvements | x |
+| test/grant_associations_w6_collection_relation_test.ri | port | test/association_test.ri | M3 | order/limit through the association ported; pluck, aggregates, distinct, batches and joins wait for M4 | |
 | test/grant_attribute_api_test.ri | defer |  |  | attribute API extras are not in v1 | |
 | test/grant_attributes_alias_attribute_test.ri | defer |  |  | attribute API extras are not in v1 | |
 | test/grant_attributes_assign_attributes_test.ri | defer |  |  | attribute API extras are not in v1 | |
@@ -160,14 +160,14 @@ completed: M1, M2
 | test/grant_migrator_migrator_test.ri | defer |  |  | migrations are in Future Improvements | |
 | test/grant_normalization_test.ri | defer |  |  | attribute API extras are not in v1 | |
 | test/grant_notifications_transaction_events_test.ri | defer |  |  | transaction start/commit/rollback notifications and subscriptions are not in doc/DESIGN.md; the SQL log (statements) is Ricord's only view of BEGIN/COMMIT/ROLLBACK | |
-| test/grant_perf_w6_primary_key_lookup_clauses_test.ri | port | test/group_loading_test.ri | M3 |  | |
-| test/grant_perf_w6_primary_key_lookup_keys_test.ri | port | test/group_loading_test.ri | M3 |  | |
-| test/grant_perf_w6_primary_key_lookup_scopes_test.ri | port | test/group_loading_test.ri | M3 |  | |
-| test/grant_perf_w6_primary_key_lookup_test.ri | port | test/group_loading_test.ri | M3 |  | |
+| test/grant_perf_w6_primary_key_lookup_clauses_test.ri | port | test/group_loading_test.ri | M3 | chained queries keep their own conditions (the persistent where chain replaces where_fields); read with to_a, pluck is M4 | x |
+| test/grant_perf_w6_primary_key_lookup_keys_test.ri | port | test/group_loading_test.ri | M3 | find again and again with one identical SELECT, Int32 key, inside a write, missing key; String keys and String primary keys are not in doc/DESIGN.md (id is Int64) | x |
+| test/grant_perf_w6_primary_key_lookup_scopes_test.ri | defer |  |  | default scopes, unscoped and scoping blocks are not in doc/DESIGN.md | |
+| test/grant_perf_w6_primary_key_lookup_test.ri | defer |  |  | the query cache and query-log tags are not in doc/DESIGN.md | |
 | test/grant_perf_w6_sqlite_time_parse_test.ri | port | test/types_test.ri | M1 | runs on both engines; the save round trip is the existing Time test | x |
-| test/grant_perf_w6_statement_count_create_find_test.ri | port | test/group_loading_test.ri | M3 |  | |
-| test/grant_perf_w6_statement_count_test.ri | port | test/group_loading_test.ri | M3 |  | |
-| test/grant_perf_w6_statement_count_writes_test.ri | port | test/group_loading_test.ri | M3 |  | |
+| test/grant_perf_w6_statement_count_create_find_test.ri | port | test/group_loading_test.ri | M3 | create is BEGIN IMMEDIATE, INSERT ... RETURNING, COMMIT; find is one SELECT; Grant's operator-form where (:gt, :like) is replaced by typed where and raw SQL, covered in crud_test | x |
+| test/grant_perf_w6_statement_count_test.ri | defer |  |  | a save of an unchanged record still runs BEGIN IMMEDIATE and COMMIT (no lazy write that sends nothing until a statement); the transaction materializer is Grant-internal | |
+| test/grant_perf_w6_statement_count_writes_test.ri | port | test/group_loading_test.ri | M3 | UPDATE inside BEGIN IMMEDIATE/COMMIT, one BEGIN and one COMMIT around several saves; a callback's write and rollback are covered by callback_test and write_test; restoring a record's state on rollback deferred as in delete_test | x |
 | test/grant_persistence_destroyed_guard_test.ri | port | test/crud_test.ri | M1 | in-memory reads after destroy, no row written back, live records unaffected; the RecordDestroyedError guard is not built (save of a destroyed record runs an UPDATE that changes no row); frozen?, update*, touch and increment not built | x |
 | test/grant_persistence_direct_persistence_test.ri | defer |  |  | update_columns, increment!, touch and read-only attributes not built and not planned in doc/DESIGN.md; per-column dirty API is M2 | |
 | test/grant_persistence_dirty_tracking_api_test.ri | defer |  |  | will_save_change_to_`<col>`? with from:/to: is not in doc/DESIGN.md, and a new record's given columns count as changed in Ricord (Grant starts clean) | |
@@ -186,7 +186,7 @@ completed: M1, M2
 | test/grant_persistence_w6_assign_unknown_key_test.ri | port | test/refused/unknown_column_key.ri | M1 | an unknown key is a build error of the typed new; assign_attributes, attributes=, alias_attribute and string-keyed hashes not in Ricord | x |
 | test/grant_persistence_w6_model_name_test.ri | defer |  |  | model_name, pluralization, human names and I18n are not built | |
 | test/grant_persistence_w6_timestamps_test.ri | port | test/dirty_test.ri | M2 | the stamp kept in memory equals the stored one (microseconds, cut by write_time); precision:, date_timestamps, set_timestamps, touch, touch_all and record_timestamps= are not in doc/DESIGN.md | x |
-| test/grant_public_api_return_types_associations_test.ri | port | test/association_test.ri | M3 |  | |
+| test/grant_public_api_return_types_associations_test.ri | port | test/association_test.ri | M3 | belongs_to/has_one return Model, Nil or DatabaseError and has_many a Model::Query, checked at compile time; polymorphic (as:) and composite foreign keys are in Future Improvements / not in doc/DESIGN.md | x |
 | test/grant_public_api_return_types_test.ri | port | test/crud_test.ri | M1 | types of Court[db], where, order/limit/offset, to_a, first, find_by, find, count, exists?, new, create and reload; Collection, find_each, scalar, sole, import_records and WhereChain not in Ricord | x |
 | test/grant_query_advanced_query_test.ri | defer |  |  | merge, dup of a query, where-chain operators (not_in, like, gt, between), subqueries and EXISTS are not built | |
 | test/grant_query_aggregations_enumerable_test.ri | defer |  |  | aggregates (sum, avg, min, max, count(column), group counts) are not built | |

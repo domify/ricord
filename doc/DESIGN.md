@@ -1703,6 +1703,22 @@ queue".
 
 ### M3: associations, scope, group loading, dependent
 
+**As built (M2-M3 part A, 2026-11-08).** Where the code differs from the items below, the code
+wins:
+
+*   Identifiers are quoted with backticks: with double quotes SQLite reads a name that is not a
+    column as a string. Validation patterns go through `Regex.new`, since a regex literal in
+    generated code crashes the compiler.
+*   A rolled-back create's after-commit and rollback items take the new id after the INSERT, so a
+    later update of the same record in that write does not queue a second `after_rollback`; the
+    method still gets `nil`.
+*   `owner.cases.build(...)` stands in for `owner.cases.new(...)`: ris treats an instance method
+    named `new` as in-place construction, which may not grow the store. The SQL builder helper
+    is `build_sql`.
+*   Loaders read rows with `read_rows` (no preload); `to_a` builds its array after preloading,
+    because recursion through a growing local array is refused.
+*   A `save` of an unchanged record still sends `BEGIN IMMEDIATE` and `COMMIT` (open).
+
 Goal: associations read through the record's session; `belongs_to` and `has_one` over a group
 of N records take one query, not N; `has_many` takes one query with `includes`; scope follows
 associations; and destroys cascade inside one write.

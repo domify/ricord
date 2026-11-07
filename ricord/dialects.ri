@@ -92,10 +92,10 @@ pub abstract struct SqliteSql
   # The column's type and constraints, after its quoted name.
   def column_sql(type : Symbol, options : ColumnOptions, into : String::Builder) : Nil
     into << case type
-    when :integer, :bigint, :boolean, :references then "INTEGER"
-    when :float                                    then "REAL"
-    when :binary                                   then "BLOB"
-    else                                                "TEXT"
+    when :integer, :bigint, :int64, :boolean, :references then "INTEGER"
+    when :float                                           then "REAL"
+    when :binary                                          then "BLOB"
+    else                                                       "TEXT"
     end
     into << " PRIMARY KEY AUTOINCREMENT" if options.primary
     into << " NOT NULL" unless options.null || options.primary
