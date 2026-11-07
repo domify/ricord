@@ -3,7 +3,7 @@
 module test/write_test
 
 import db/db/spec::{describe, it}
-import ricord/failures::{Rollback, RecordNotFound}
+import ricord/failures::{Rollback, RecordNotFound, DatabaseError}
 import test/spec_helper::*
 import test/models::*
 
@@ -55,6 +55,204 @@ describe "write" do
     with_db do |db|
       Court.create(db, name: "a").or_panic
       assert db.statements.includes?("BEGIN IMMEDIATE")
+    end
+  end
+end
+
+# Ported from grant_transaction, grant_transaction_atomicity,
+# grant_transaction_return_value, grant_transaction_savepoint_failure and
+# grant_transaction_error_translation.
+describe "write atomicity" do
+  it "rolls back every row on a failure, keeps them all on a clean block" do
+    with_db do |db|
+      boom = DatabaseError.new("courts", "test", "force rollback")
+      failed = db.write do |tx|
+        Court.create(tx, name: "Alice").or_panic
+        Court.create(tx, name: "Bob").or_panic
+        boom
+      end
+      assert failed.is_a?(DatabaseError) && failed.message.includes?("force rollback")
+      assert Court[db].count.or_panic == 0_i64
+      db.write do |tx|
+        Court.create(tx, name: "Charlie").or_panic
+        Court.create(tx, name: "Dave").or_panic
+        tx.roll_back
+      end
+      assert Court[db].count.or_panic == 0_i64
+      db.write do |tx|
+        Court.create(tx, name: "Eve").or_panic
+        Court.create(tx, name: "Frank").or_panic
+        nil
+      end.or_panic
+      assert Court[db].order(:name).to_a.or_panic.map(&.name) == ["Eve", "Frank"]
+    end
+  end
+
+  it "rolls back rows of several models in one write" do
+    with_db do |db|
+      failed = db.write do |tx|
+        Court.create(tx, name: "cross").or_panic
+        Account.create(tx, name: "cross").or_panic
+        tx.roll_back
+      end
+      assert failed.is_a?(Rollback)
+      assert Court[db].count.or_panic == 0_i64
+      assert Account[db].count.or_panic == 0_i64
+    end
+  end
+
+  it "rolls back a released savepoint with the outer write" do
+    with_db do |db|
+      failed = db.write do |tx|
+        tx.write { |inner| Court.create(inner, name: "Inner").or_panic; nil }.or_panic
+        Court.create(tx, name: "Outer").or_panic
+        tx.roll_back
+      end
+      assert failed.is_a?(Rollback)
+      assert Court[db].count.or_panic == 0_i64
+    end
+  end
+
+  it "tells whether a write is open" do
+    with_db do |db|
+      assert db.state.depth == 0
+      db.write { |tx| assert tx.session.state.depth == 1; nil }.or_panic
+      assert db.state.depth == 0
+    end
+  end
+end
+
+describe "write return values" do
+  it "returns the block value, the Rollback, nil or the failure" do
+    with_db do |db|
+      court = db.write { |tx| Court.create(tx, name: "Ada").or_panic }.or_panic
+      assert court.is_a?(Court) && court.name == "Ada"
+      assert db.write { |tx| 1 }.or_panic == 1
+      assert db.write { |tx| "x" }.or_panic == "x"
+      assert db.write { |tx| tx.roll_back }.is_a?(Rollback)
+      assert db.write { |tx| nil }.or_panic.nil?
+      nope = DatabaseError.new("courts", "test", "nope")
+      failed = db.write { |tx| nope }
+      assert failed.is_a?(DatabaseError) && failed.message.includes?("nope")
+    end
+  end
+
+  it "returns the value of a nested write" do
+    with_db do |db|
+      value = db.write do |tx|
+        assert tx.write { |inner| 2 }.or_panic == 2
+        tx.write { |inner| 5 }.or_panic
+      end
+      assert value.or_panic == 5
+    end
+  end
+end
+
+describe "savepoint failures" do
+  it "rolls back only the savepoint when its block fails" do
+    with_db do |db|
+      failure = DatabaseError.new("courts", "test", "inner failure")
+      db.write do |tx|
+        Court.create(tx, name: "Kept").or_panic
+        inner = tx.write do |inner_tx|
+          Court.create(inner_tx, name: "Discarded").or_panic
+          failure
+        end
+        assert inner.is_a?(DatabaseError) && inner.message.includes?("inner failure")
+        Court.create(tx, name: "After").or_panic
+        nil
+      end.or_panic
+      assert Court[db].order(:name).to_a.or_panic.map(&.name) == ["After", "Kept"]
+    end
+  end
+
+  it "recovers from a failing statement inside a savepoint and keeps the outer work" do
+    with_db do |db|
+      db.write do |tx|
+        Court.create(tx, name: "Kept").or_panic
+        inner = tx.write { |inner_tx| inner_tx.exec("INSERT INTO no_such_table_for_savepoint_spec (x) VALUES (1)") }
+        assert inner.is_a?(DatabaseError)
+        Court.create(tx, name: "After").or_panic
+        nil
+      end.or_panic
+      assert db.statements.last == "COMMIT"
+      assert Court[db].order(:name).to_a.or_panic.map(&.name) == ["After", "Kept"]
+      assert db.statements.any?(&.starts_with?("ROLLBACK TO ricord_"))
+    end
+  end
+
+  it "leaves no write open and keeps savepoint names unique" do
+    with_db do |db|
+      failed = db.write { |tx| tx.write { |inner| inner.roll_back } }
+      assert failed.is_a?(Rollback), "the inner Rollback is the outer block's value, so both roll back"
+      boom = DatabaseError.new("courts", "test", "boom")
+      failed = db.write do |tx|
+        tx.write { |inner| inner.roll_back }
+        tx.write { |inner| nil }.or_panic
+        boom
+      end
+      assert failed.is_a?(DatabaseError)
+      assert db.state.depth == 0
+      assert db.statements.count(&.starts_with?("SAVEPOINT")) == 3
+      assert db.statements.includes?("SAVEPOINT ricord_1") && db.statements.includes?("SAVEPOINT ricord_2")
+      assert db.statements.includes?("SAVEPOINT ricord_3")
+      assert Court.create(db, name: "next").or_panic.persisted?, "the next write works"
+    end
+  end
+
+  it "returns a constraint failure raised by COMMIT itself" do
+    with_db do |db|
+      db.exec("CREATE TABLE deferred_owners (id INTEGER PRIMARY KEY)").or_panic
+      db.exec("CREATE TABLE deferred_children (owner_id INTEGER REFERENCES deferred_owners (id) DEFERRABLE INITIALLY DEFERRED)").or_panic
+      failed = db.write { |tx| tx.exec("INSERT INTO deferred_children (owner_id) VALUES (42)") }
+      assert failed.is_a?(DatabaseError)
+      assert db.statements.last == "COMMIT"
+      Court.create(db, name: "after").or_panic
+      assert db.scalar("SELECT count(*) FROM deferred_children", Int64).or_panic == 0_i64
+    end
+  end
+end
+
+# Ported from grant_transactions_create, grant_transactions_save,
+# grant_transactions_update and grant_transactions_destroy (no validations,
+# callbacks, timestamps or update(**attrs) in M1).
+describe "save, create and destroy" do
+  it "creates, saves an update, and moves new_record and persisted" do
+    with_db do |db|
+      created = Court.create(db, name: "Test Court").or_panic
+      assert created.persisted? && created.name == "Test Court"
+      court = Court.new(db)
+      assert court.new_record? && !court.persisted?
+      court.name = "Test Court 1"
+      court.save.or_panic
+      assert !court.new_record? && court.persisted?
+      court.name = "Test Court 2"
+      court.save.or_panic
+      assert Court[db].count.or_panic == 2_i64
+      assert Court[db].find(court.id).or_panic.name == "Test Court 2"
+    end
+  end
+
+  it "saves nil into a nullable column" do
+    with_db do |db|
+      court = Court.create(db, name: "n", rank: 3).or_panic
+      court.rank = nil
+      court.save.or_panic
+      assert court.rank.nil?
+      assert Court[db].find(court.id).or_panic.rank.nil?
+    end
+  end
+
+  it "destroys a row and moves destroyed and persisted" do
+    with_db do |db|
+      court = Court.new(db, name: "gone")
+      assert !court.destroyed? && !court.persisted?
+      court.save.or_panic
+      assert !court.destroyed? && court.persisted?
+      id = court.id
+      court.destroy.or_panic
+      assert court.destroyed? && !court.persisted?
+      assert Court[db].find(id).is_a?(RecordNotFound)
     end
   end
 end

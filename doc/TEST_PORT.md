@@ -1,4 +1,4 @@
-completed:
+completed: M1
 
 | file | verdict | target | milestone | reason | done |
 |---|---|---|---|---|---|
@@ -199,14 +199,14 @@ completed:
 | test/grant_query_distinct_test.ri | port | test/pluck_test.ri | M4 |  | |
 | test/grant_query_excluding_invert_test.ri | defer |  |  | excluding/without and invert_where are not built | |
 | test/grant_query_executor_test.ri | defer |  |  | query feature not in v1 | |
-| test/grant_query_existence_predicates_test.ri | port | test/crud_test.ri | M1 | exists? with LIMIT 1, no ORDER BY, and a limit; empty?, any?, none?, many?, one? and sole not built; exists? after an offset is not tested: count(*) ... LIMIT 1 OFFSET n returns no row and fails with "scalar: no results" (Ricord bug) | x |
+| test/grant_query_existence_predicates_test.ri | port | test/crud_test.ri | M1 | exists?, empty? and any? as one LIMIT 1 probe with no ORDER BY, for no, one and many rows, a limit and an offset; none?, many?, one? and sole not built | x |
 | test/grant_query_extract_associated_test.ri | defer |  |  | query feature not in v1 | |
 | test/grant_query_find_each_test.ri | port | test/each_test.ri | M4 |  | |
 | test/grant_query_from_subquery_test.ri | defer |  |  | query feature not in v1 | |
 | test/grant_query_group_alias_test.ri | defer |  |  | query feature not in v1 | |
 | test/grant_query_grouped_aggregates_test.ri | defer |  |  | query feature not in v1 | |
 | test/grant_query_having_test.ri | defer |  |  | query feature not in v1 | |
-| test/grant_query_implicit_order_test.ri | port | test/crud_test.ri | M1 | plain reads unordered, first by id ascending, an explicit order kept; last, find_each, the implicit_order setting and implicit_order_column not built | x |
+| test/grant_query_implicit_order_test.ri | port | test/crud_test.ri | M1 | plain reads unordered, first by id ascending, last by id descending (filtered too), an explicit order kept for first and last; find_each is M4; the implicit_order setting and implicit_order_column not built | x |
 | test/grant_query_in_batches_relation_test.ri | port | test/each_test.ri | M4 |  | |
 | test/grant_query_in_order_of_test.ri | defer |  |  | query feature not in v1 | |
 | test/grant_query_joins_integration_test.ri | port | test/pluck_test.ri | M4 |  | |
@@ -257,27 +257,27 @@ completed:
 | test/grant_schema_check_unique_constraints_test.ri | port | test/schema_test.ri | M1 | check_constraint (named and unnamed) and a two-column unique index in create_table, enforced on both engines; adding or removing constraints on an existing table, introspection and PostgreSQL/MySQL forms not in Ricord | x |
 | test/grant_schema_column_defaults_test.ri | port | test/schema_test.ri | M1 | string (quote escaped), integer and boolean literal defaults in the DDL and applied by the database; default_sql expressions and change_column_default not in Ricord | x |
 | test/grant_schema_comments_test.ri | defer |  |  | migrations and schema tooling are in Future Improvements | |
-| test/grant_schema_composite_pk_create_test.ri | port | test/schema_test.ri | M1 |  | |
-| test/grant_schema_create_table_test.ri | port | test/schema_test.ri | M1 |  | |
+| test/grant_schema_composite_pk_create_test.ri | defer |  |  | composite primary keys are not in Ricord (column 0 is always the integer id); the PRIMARY KEY list DSL is migrations | |
+| test/grant_schema_create_table_test.ri | port | test/schema_test.ri | M1 | the default INTEGER PRIMARY KEY AUTOINCREMENT id and IF NOT EXISTS (a second create_table keeps the rows); force, temporary, comments, collation, id types, tables without an id, drop_table and the PostgreSQL/MySQL forms are migrations, not in Ricord | x |
 | test/grant_schema_ddl_transaction_test.ri | defer |  |  | migrations and schema tooling are in Future Improvements | |
 | test/grant_schema_environment_protection_test.ri | defer |  |  | migrations and schema tooling are in Future Improvements | |
-| test/grant_schema_foreign_keys_test.ri | port | test/schema_test.ri | M1 |  | |
+| test/grant_schema_foreign_keys_test.ri | port | test/schema_test.ri | M1 | REFERENCES with ON DELETE CASCADE, RESTRICT and SET NULL in create_table, a missing parent refused, cascade and nullify applied; add/remove/validate_foreign_key, on_update, deferrable, if_not_exists and introspection are migrations, not in Ricord | x |
 | test/grant_schema_generator_test.ri | defer |  |  | migrations and schema tooling are in Future Improvements | |
-| test/grant_schema_indexes_test.ri | port | test/schema_test.ri | M1 |  | |
+| test/grant_schema_indexes_test.ri | port | test/schema_test.ri | M1 | plain, unique and multi-column indexes with the default name or a given name, created with the table, the unique one enforced; partial, expression, using, order, include, concurrently, remove/rename_index and introspection are migrations, not in Ricord | x |
 | test/grant_schema_introspection_test.ri | defer |  |  | migrations and schema tooling are in Future Improvements | |
 | test/grant_schema_m02a_review_test.ri | defer |  |  | migrations and schema tooling are in Future Improvements | |
 | test/grant_schema_micrate_sql_files_test.ri | defer |  |  | migrations and schema tooling are in Future Improvements | |
 | test/grant_schema_migration_context_test.ri | defer |  |  | migrations and schema tooling are in Future Improvements | |
 | test/grant_schema_migrator_options_test.ri | defer |  |  | migrations and schema tooling are in Future Improvements | |
-| test/grant_schema_model_indexes_test.ri | port | test/schema_test.ri | M1 |  | |
+| test/grant_schema_model_indexes_test.ri | port | test/schema_test.ri | M1 | a model's unique index and a named two-column index (index name: added to the model macro) created by create_table, the unique one enforced | x |
 | test/grant_schema_pending_check_test.ri | defer |  |  | migrations and schema tooling are in Future Improvements | |
 | test/grant_schema_pg_enum_extension_test.ri | drop |  |  | PostgreSQL or MySQL only | |
-| test/grant_schema_references_join_table_test.ri | port | test/schema_test.ri | M1 |  | |
+| test/grant_schema_references_join_table_test.ri | port | test/schema_test.ri | M1 | :references columns with a foreign key, on_delete, NOT NULL unless null: true; join tables (no id), polymorphic references, the automatic index on a reference and add/remove_reference are not in Ricord | x |
 | test/grant_schema_rename_test.ri | defer |  |  | migrations and schema tooling are in Future Improvements | |
 | test/grant_schema_reversible_test.ri | defer |  |  | migrations and schema tooling are in Future Improvements | |
 | test/grant_schema_schema_cache_test.ri | defer |  |  | migrations and schema tooling are in Future Improvements | |
-| test/grant_schema_timestamps_ddl_test.ri | port | test/schema_test.ri | M1 |  | |
-| test/grant_schema_type_mapping_test.ri | port | test/schema_test.ri | M1 |  | |
+| test/grant_schema_timestamps_ddl_test.ri | port | test/schema_test.ri | M1 | a datetime column NOT NULL unless null: true, a NULL insert refused; cols :timestamps is M2; precision and add/remove_timestamps are migrations | x |
+| test/grant_schema_type_mapping_test.ri | port | test/schema_test.ri | M1 | the SQLite type of every Ricord column type and a round trip of each value; limit is accepted but not emitted; decimal, date, uuid, smallint and the PostgreSQL/MySQL catalogs are not in Ricord | x |
 | test/grant_schema_verify_model_test.ri | defer |  |  | migrations and schema tooling are in Future Improvements | |
 | test/grant_schema_w6b_add_timestamps_sqlite_test.ri | defer |  |  | migrations and schema tooling are in Future Improvements | |
 | test/grant_schema_w6b_change_column_default_sqlite_test.ri | defer |  |  | migrations and schema tooling are in Future Improvements | |
@@ -289,33 +289,33 @@ completed:
 | test/grant_scoping_scoping_test.ri | defer |  |  | default and named scopes are not in v1 (scope comes from associations) | |
 | test/grant_secure_token_test.ri | defer |  |  | attribute API extras are not in v1 | |
 | test/grant_select_select_test.ri | port | test/pluck_test.ri | M4 |  | |
-| test/grant_simple_connection_test.ri | port | test/crud_test.ri | M1 |  | |
-| test/grant_spec_support_transactional_wrapper_test.ri | port | test/crud_test.ri | M1 |  | |
-| test/grant_table_table_test.ri | port | test/schema_test.ri | M1 |  | |
-| test/grant_tape_model_test.ri | port | test/crud_test.ri | M1 |  | |
+| test/grant_simple_connection_test.ri | port | test/crud_test.ri | M1 | a second Ricord.open on the same URI sees committed rows; the connection registry and roles are replaced by Ricord.open and the URI | x |
+| test/grant_spec_support_transactional_wrapper_test.ri | port | test/crud_test.ri | M1 | rows made in a rolled-back write, nested ones too, are gone (with_db gives each test a fresh file, so no wrapper is needed); after_commit in the wrapper is M2; several connections and the timing check are Grant-only | x |
+| test/grant_table_table_test.ri | port | test/schema_test.ri | M1 | the table name from table or the model name (pluralized), the primary key id; custom primary keys and namespaced models are not in Ricord | x |
+| test/grant_tape_model_test.ri | port | test/crud_test.ri | M1 | typed reads, to_param, a copy is the same record, every where form, order/limit/first, find_by, exists?, an unchanged chained query, a rolled-back write and destroy; validations, callbacks, dirty tracking and timestamps are M2, associations M3, pluck, includes, delete_all and update_all M4; to_json and heap copies are not in Ricord | x |
 | test/grant_tasks_seeds_test.ri | drop |  |  | rake-style tasks and fixtures removed | |
 | test/grant_tasks_truncate_all_test.ri | drop |  |  | rake-style tasks and fixtures removed | |
 | test/grant_test_fixtures_test.ri | drop |  |  | rake-style tasks and fixtures removed | |
 | test/grant_transaction_after_all_commit_test.ri | port | test/after_commit_test.ri | M2 |  | |
-| test/grant_transaction_atomicity_test.ri | port | test/write_test.ri | M1 |  | |
+| test/grant_transaction_atomicity_test.ri | port | test/write_test.ri | M1 | a failure or a Rollback undoes every row, a clean block keeps them, rows of several models roll back together; routing per adapter is Grant-only | x |
 | test/grant_transaction_cross_database_nesting_test.ri | drop |  |  | transaction routing and options replaced by db.write | |
-| test/grant_transaction_error_translation_test.ri | port | test/write_test.ri | M1 |  | |
+| test/grant_transaction_error_translation_test.ri | port | test/write_test.ri | M1 | a failing statement in a savepoint is a DatabaseError and the outer work commits; a constraint failure from COMMIT itself is returned and the session keeps working; read-only and serializable transactions are PostgreSQL only | x |
 | test/grant_transaction_handle_test.ri | drop |  |  | transaction routing and options replaced by db.write | |
 | test/grant_transaction_isolation_sql_test.ri | drop |  |  | transaction routing and options replaced by db.write | |
 | test/grant_transaction_joinable_test.ri | drop |  |  | transaction routing and options replaced by db.write | |
 | test/grant_transaction_replica_routing_test.ri | drop |  |  | transaction routing and options replaced by db.write | |
 | test/grant_transaction_requires_new_savepoint_test.ri | drop |  |  | transaction routing and options replaced by db.write | |
-| test/grant_transaction_return_value_test.ri | port | test/write_test.ri | M1 |  | |
-| test/grant_transaction_savepoint_failure_test.ri | port | test/write_test.ri | M1 |  | |
-| test/grant_transaction_test.ri | port | test/write_test.ri | M1 |  | |
-| test/grant_transactions_create_test.ri | port | test/write_test.ri | M1 |  | |
-| test/grant_transactions_destroy_test.ri | port | test/write_test.ri | M1 |  | |
-| test/grant_transactions_import_test.ri | port | test/write_test.ri | M1 |  | |
-| test/grant_transactions_save_natural_key_test.ri | port | test/write_test.ri | M1 |  | |
-| test/grant_transactions_save_test.ri | port | test/write_test.ri | M1 |  | |
+| test/grant_transaction_return_value_test.ri | port | test/write_test.ri | M1 | write returns the block value (a record, Int32, String, nil), a nested write's value, the Rollback or the failure itself; joinable/independent levels and Grant.transaction forms are replaced by db.write | x |
+| test/grant_transaction_savepoint_failure_test.ri | port | test/write_test.ri | M1 | a failing savepoint rolls back alone, a failing statement is recovered with ROLLBACK TO and COMMIT follows, no write is left open, savepoint names stay unique; savepoint callbacks are M2; restoring a record's in-memory state after a rolled-back savepoint is not in Ricord | x |
+| test/grant_transaction_test.ri | port | test/write_test.ri | M1 | commit, rollback on a failure and on Rollback, a nested write as a savepoint, a released savepoint undone with the outer write, whether a write is open (state.depth); a joined nested block is not in Ricord (every nested write is a savepoint); isolation levels and readonly are PostgreSQL/MySQL options | x |
+| test/grant_transactions_create_test.ri | port | test/write_test.ri | M1 | create persists and reads back (the reserved word column is in crud_test); validations and skip_timestamps are M2; custom primary keys and namespaced models are not in Ricord | x |
+| test/grant_transactions_destroy_test.ri | port | test/write_test.ri | M1 | destroy removes the row and moves destroyed? and persisted?; a before_destroy abort is M2; custom primary keys and namespaced models are not in Ricord | x |
+| test/grant_transactions_import_test.ri | port | test/write_test.ri | M4 | import_records is a bulk write (M4); upserts on a non-auto key need settable primary keys, not in Ricord | |
+| test/grant_transactions_save_natural_key_test.ri | defer |  |  | String (natural) primary keys are not in Ricord (column 0 is always the integer id) | |
+| test/grant_transactions_save_test.ri | port | test/write_test.ri | M1 | save inserts then updates, new_record? and persisted? move; validations, type conversion errors and skip_timestamps are M2; a new record with another's id needs a settable id, not in Ricord | x |
 | test/grant_transactions_timestamp_precision_test.ri | port | test/dirty_test.ri | M2 |  | |
 | test/grant_transactions_touch_test.ri | port | test/dirty_test.ri | M2 |  | |
-| test/grant_transactions_update_test.ri | port | test/write_test.ri | M1 |  | |
+| test/grant_transactions_update_test.ri | port | test/write_test.ri | M1 | a setter and save update a row, nil saved into a nullable column; update(**attrs), validations and timestamps are M2 | x |
 | test/grant_validation_helpers_blank_test.ri | port | test/validation_test.ri | M2 |  | |
 | test/grant_validation_helpers_choice_test.ri | port | test/validation_test.ri | M2 |  | |
 | test/grant_validation_helpers_exclusion_test.ri | port | test/validation_test.ri | M2 |  | |
@@ -350,7 +350,7 @@ completed:
 | test/querying_spec_models.ri | drop |  |  | support file, not a test | |
 | test/schema_fixture.ri | drop |  |  | support file, not a test | |
 | test/spec_helper.ri | drop |  |  | support file, not a test | |
-| test/spike_crud_test.ri | port | test/crud_test.ri | M1 |  | |
+| test/spike_crud_test.ri | port | test/crud_test.ri | M1 | create, save, find, where, destroy, destroyed? and RecordNotFound after it; the after_destroy callback is M2 | x |
 | test/table_namespace_model.ri | drop |  |  | support file, not a test | |
 | test/transaction_crud_models.ri | drop |  |  | support file, not a test | |
 | test/transaction_sql_recorder.ri | drop |  |  | support file, not a test | |

@@ -495,3 +495,121 @@ describe "finders and reload" do
     end
   end
 end
+
+# Ported from spike_crud and the CRUD, query and transaction parts of
+# grant_tape_model (associations, validations, callbacks, dirty tracking,
+# to_json, pluck and includes are M2-M4).
+describe "one request's records" do
+  it "creates, updates, finds, filters and destroys" do
+    with_db do |db|
+      record = Court.create(db, name: "before").or_panic
+      assert record.persisted?
+      record.name = "after"
+      record.save.or_panic
+      assert Court[db].find(record.id).or_panic.name == "after"
+      assert Court[db].where(name: "after").to_a.or_panic.size == 1
+      record.destroy.or_panic
+      assert record.destroyed?
+      assert Court[db].find(record.id).is_a?(RecordNotFound)
+    end
+  end
+
+  it "reads typed columns, filters, orders and rolls back on one session" do
+    with_db do |db|
+      at = Time.utc(2026, 1, 2, 3, 4, 5)
+      ann = Court.create(db, name: "Ann", rank: 3, score: 4.5, active: true, opened_at: at).or_panic
+      Court.create(db, name: "Bob", rank: 9, active: false).or_panic
+      Court.create(db, name: "Cy", rank: 9).or_panic
+      court = Court[db].find(ann.id).or_panic
+      assert court.rank == 3_i64 && court.score == 4.5 && court.active && court.opened_at == at
+      assert !court.changed?
+      assert court.to_param == ann.id.to_s
+      same = court
+      same.name = "Bea"
+      assert court.name == "Bea", "a copy is the same record"
+      court.save.or_panic
+      assert Court[db].find(ann.id).or_panic.name == "Bea"
+      assert Court[db].where(rank: 9).order(:name).to_a.or_panic.map(&.name) == ["Bob", "Cy"]
+      assert Court[db].where(name: ["Bob", "Cy"]).count.or_panic == 2_i64
+      assert Court[db].where(name: [] of String).count.or_panic == 0_i64
+      assert Court[db].where(rank: 3_i64..9_i64).count.or_panic == 3_i64
+      assert Court[db].where(rank: 4_i64...9_i64).count.or_panic == 0_i64
+      assert Court[db].where(score: nil).count.or_panic == 2_i64
+      assert Court[db].where("rank > ?", 8).count.or_panic == 2_i64
+      assert Court[db].where(name: "Bob").or_where(name: "Cy").count.or_panic == 2_i64
+      top = Court[db].order(name: :desc).limit(1).first.or_panic
+      assert !top.nil? && top.name == "Cy"
+      assert Court[db].where(rank: 1).first.or_panic.nil?
+      bob = Court[db].find_by(name: "Bob").or_panic
+      assert !bob.nil? && !bob.active
+      assert Court[db].where(name: "Bob").exists?.or_panic
+      nines = Court[db].where(rank: 9)
+      assert nines.where(name: "Bob").count.or_panic == 1_i64
+      assert nines.count.or_panic == 2_i64, "a chained query leaves the first unchanged"
+      before = Court[db].count.or_panic
+      db.write { |tx| Court.create(tx, name: "Gone").or_panic; tx.roll_back }
+      assert Court[db].count.or_panic == before
+    end
+  end
+end
+
+# Ported from grant_simple_connection (the registry and roles are replaced by
+# Ricord.open and the URI) and grant_spec_support_transactional_wrapper (with_db
+# gives each test a fresh file; a write that rolls back is the wrapper).
+describe "connections and test isolation" do
+  it "opens a second connection on the same URI that sees committed rows" do
+    with_db do |db|
+      Court.create(db, name: "shared").or_panic
+      db.release
+      seen = Ricord.open(database_url) { |other| Court[other].where(name: "shared").count.or_panic }
+      assert seen.or_panic == 1_i64
+    end
+  end
+
+  it "rolls back rows made inside a rolled-back write, nested ones too" do
+    with_db do |db|
+      db.write do |tx|
+        Court.create(tx, name: "gone").or_panic
+        assert Court[tx].count.or_panic == 1_i64
+        tx.roll_back
+      end
+      assert Court[db].count.or_panic == 0_i64
+      db.write do |tx|
+        Court.create(tx, name: "outer").or_panic
+        tx.write { |inner| Court.create(inner, name: "inner").or_panic; inner.roll_back }
+        assert Court[tx].order(:name).to_a.or_panic.map(&.name) == ["outer"]
+        tx.roll_back
+      end
+      assert Court[db].count.or_panic == 0_i64
+    end
+  end
+end
+
+# The parts of grant_query_existence_predicates and grant_query_implicit_order
+# that empty?, any? and last now cover.
+describe "emptiness and last" do
+  it "answers empty? and any? for no, one and many rows" do
+    with_db do |db|
+      query = Court[db].where(rank: 1)
+      assert query.empty?.or_panic && !query.any?.or_panic
+      Court.create(db, name: "a", rank: 1).or_panic
+      assert !query.empty?.or_panic && query.any?.or_panic
+      Court.create(db, name: "b", rank: 1).or_panic
+      assert !query.empty?.or_panic && query.any?.or_panic
+      assert !db.statements.last.includes?("ORDER BY")
+    end
+  end
+
+  it "orders last by id descending, filtered or not, and keeps an explicit order" do
+    with_db do |db|
+      ids = ["b", "c", "a"].map { |n| Court.create(db, name: n).or_panic.id }
+      last = Court[db].last.or_panic
+      assert !last.nil? && last.id == ids[2]
+      filtered = Court[db].where("name != ?", "zzz").last.or_panic
+      assert !filtered.nil? && filtered.id == ids[2]
+      assert db.statements.last.includes?("ORDER BY `id` DESC LIMIT 1")
+      by_name = Court[db].order(:name).last.or_panic
+      assert !by_name.nil? && by_name.name == "c"
+    end
+  end
+end

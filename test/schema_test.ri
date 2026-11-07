@@ -4,6 +4,7 @@ module test/schema_test
 import db/db/spec::{describe, it}
 import ricord
 import ricord/model::{model}
+import std/time::{Time}
 import ricord/failures::{DatabaseError}
 import test/spec_helper::*
 import test/models::*
@@ -97,6 +98,132 @@ describe "constraints and defaults" do
       assert row.role == "it's"
       assert row.qty == 5_i64
       assert !row.on
+    end
+  end
+end
+
+# For grant_schema_type_mapping, grant_schema_model_indexes, grant_schema_timestamps_ddl,
+# grant_schema_references_join_table, grant_schema_create_table and grant_table_table.
+model TypedRow do
+  table :typed_rows
+  col :code, :string
+  col :note, :text, null: true
+  col :count, :integer, null: true
+  col :big, :bigint, null: true
+  col :ratio, :float, null: true
+  col :flag, :boolean, null: true
+  col :happened, :datetime, null: true
+  col :doc, :json, null: true
+  col :bytes, :binary, null: true
+end
+
+model Member do
+  table :members
+  col :email, :string
+  col :last_name, :string, null: true
+  col :first_name, :string, null: true
+  index :email, unique: true
+  index [:last_name, :first_name], name: "members_names"
+end
+
+model StampedRow do
+  table :stamped_rows
+  col :name, :string, null: true
+  col :created_at, :datetime
+  col :updated_at, :datetime, null: true
+end
+
+model Post do
+  table :posts
+  col :owner_id, :references, to: :accounts, on_delete: :cascade
+  col :editor_id, :references, to: :accounts, on_delete: :nullify, null: true
+  col :title, :string
+end
+
+model SongThread do
+  col :name, :string, null: true
+end
+
+describe "create_table from a model" do
+  it "names the table from `table` or the model name, and the key id" do
+    assert Court::TABLE == "courts"
+    assert TypedRow::TABLE == "typed_rows"
+    assert SongThread::TABLE == "song_threads"
+    assert Court::PRIMARY == "id" && SongThread::PRIMARY == "id"
+    assert SongThread::COLUMNS == ["id", "name"]
+  end
+
+  it "skips a table that exists and keeps its rows" do
+    with_db do |db|
+      Court.create(db, name: "kept").or_panic
+      Court.create_table(db).or_panic
+      assert db.statements.count(&.starts_with?("CREATE TABLE IF NOT EXISTS `courts`")) == 2
+      assert Court[db].count.or_panic == 1_i64
+    end
+  end
+
+  it "maps every column type and round trips values" do
+    with_db do |db|
+      TypedRow.create_table(db).or_panic
+      ddl = db.statements.find(&.starts_with?("CREATE TABLE IF NOT EXISTS `typed_rows`")) || ""
+      assert ddl.includes?("`id` INTEGER PRIMARY KEY AUTOINCREMENT")
+      ["`code` TEXT NOT NULL", "`note` TEXT,", "`count` INTEGER,", "`big` INTEGER,", "`ratio` REAL,",
+       "`flag` INTEGER,", "`happened` TEXT,", "`doc` TEXT,", "`bytes` BLOB)"].each do |part|
+        assert ddl.includes?(part), part
+      end
+      at = Time.utc(2020, 1, 2, 3, 4, 5, nanosecond: 123_000_000)
+      made = TypedRow.create(db, code: "abc", note: "text", count: 5, big: 3_000_000_000_i64, ratio: 1.5,
+        flag: true, happened: at, doc: %({"a":1})).or_panic
+      row = TypedRow[db].find(made.id).or_panic
+      assert row.code == "abc" && row.note == "text"
+      assert row.count == 5_i64 && row.big == 3_000_000_000_i64
+      assert row.ratio == 1.5 && row.flag == true
+      assert row.happened == at
+      assert row.doc["a"] == "1"
+      assert db.scalar("SELECT typeof(`count`) || typeof(`ratio`) || typeof(`note`) FROM typed_rows", String).or_panic == "integerrealtext"
+    end
+  end
+
+  it "creates the declared indexes, named and default, and enforces the unique one" do
+    with_db do |db|
+      Member.create_table(db).or_panic
+      assert db.statements.any?(&.includes?("CREATE UNIQUE INDEX IF NOT EXISTS `index_members_on_email` ON `members` (`email`)"))
+      assert db.statements.any?(&.includes?("CREATE INDEX IF NOT EXISTS `members_names` ON `members` (`last_name`, `first_name`)"))
+      Member.create(db, email: "a@x").or_panic
+      assert Member.create(db, email: "a@x").is_a?(DatabaseError)
+      Member.create(db, email: "b@x", last_name: "L", first_name: "F").or_panic
+      Member.create(db, email: "c@x", last_name: "L", first_name: "F").or_panic
+      assert Member[db].count.or_panic == 3_i64
+    end
+  end
+
+  it "makes a column NOT NULL unless null: true" do
+    with_db do |db|
+      StampedRow.create_table(db).or_panic
+      ddl = db.statements.find(&.starts_with?("CREATE TABLE IF NOT EXISTS `stamped_rows`")) || ""
+      assert ddl.includes?("`created_at` TEXT NOT NULL")
+      assert ddl.includes?("`updated_at` TEXT)")
+      assert db.exec("INSERT INTO stamped_rows (name) VALUES ('x')").is_a?(DatabaseError)
+      db.exec("INSERT INTO stamped_rows (name, created_at) VALUES ('x', '2020-01-01 00:00:00')").or_panic
+      row = StampedRow[db].first.or_panic
+      assert !row.nil? && row.updated_at.nil?
+    end
+  end
+
+  it "declares references with their foreign keys and enforces them" do
+    with_db do |db|
+      Post.create_table(db).or_panic
+      ddl = db.statements.find(&.starts_with?("CREATE TABLE IF NOT EXISTS `posts`")) || ""
+      assert ddl.includes?("`owner_id` INTEGER NOT NULL REFERENCES `accounts`(`id`) ON DELETE CASCADE")
+      assert ddl.includes?("`editor_id` INTEGER REFERENCES `accounts`(`id`) ON DELETE SET NULL")
+      owner = Account.create(db, name: "o").or_panic
+      editor = Account.create(db, name: "e").or_panic
+      assert Post.create(db, owner_id: 999, title: "t").is_a?(DatabaseError), "a missing parent is refused"
+      post = Post.create(db, owner_id: owner.id, editor_id: editor.id, title: "t").or_panic
+      editor.destroy.or_panic
+      assert post.reload.or_panic.editor_id.nil?, "nullify"
+      owner.destroy.or_panic
+      assert Post[db].count.or_panic == 0_i64, "cascade"
     end
   end
 end
