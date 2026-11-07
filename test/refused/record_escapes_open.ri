@@ -1,0 +1,27 @@
+# expect: cannot return a value made in this block's scratch
+# M0 item 17: a record built inside a session block cannot leave it.
+module test/refused/record_escapes_open
+
+import db/db/db
+import sqlite/sqlite/core
+
+class ProbeStore
+  getter names = [] of Int64
+end
+
+@[OnTape]
+struct ProbeRecord
+  getter store : ProbeStore
+
+  def initialize(@store : ProbeStore)
+  end
+end
+
+def leak : ProbeRecord
+  ::Db::Db.open("sqlite3:%3Amemory%3A") do |db|
+    store = ProbeStore.new
+    ProbeRecord.new(store)
+  end.or_panic
+end
+
+leak

@@ -1,9 +1,0 @@
-module grant/validation_helpers/choice
-
-pub macro model_methods(model)
-  macro validate_is_valid_choice(field, choices)
-    validate \{{ field }}, "#{\{{ field }}} has an invalid choice. Valid choices are: #{\{{ choices }}.join(",")}" do |model|
-      \{{ choices }}.any? { |value| value == model.\{{ field.id }} }
-    end
-  end
-end

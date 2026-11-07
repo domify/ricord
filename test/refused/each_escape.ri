@@ -1,0 +1,27 @@
+# expect: cannot store data made in this block where it outlives the block
+# M0 item 16a: a record yielded by a block cannot be kept in an outer variable (M4 `each`).
+module test/refused/each_escape
+
+class ProbeStore
+  getter ids = [] of Int64
+end
+
+@[OnTape]
+struct ProbeRecord
+  getter store : ProbeStore
+
+  def initialize(@store : ProbeStore)
+  end
+end
+
+def each_record(& : ProbeRecord -> Nil) : Nil
+  store = ProbeStore.new
+  yield ProbeRecord.new(store)
+end
+
+kept = nil
+each_record do |record|
+  kept = record
+  nil
+end
+puts kept.nil?

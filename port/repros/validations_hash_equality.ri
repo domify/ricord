@@ -1,6 +1,0 @@
-# Run with: IYI_CACHE_DIR=$PWD/.ris-cache /home/priit/contribute/ris/bin/ris run \
-#   port/repros/validations_hash_equality.ri
-# Expected true; native Hash currently inherits identity equality and prints false.
-a = {:count => 3}
-b = {:count => 3}
-puts a == b

@@ -1,9 +1,0 @@
-module grant/validation_helpers/exclusion
-
-pub macro model_methods(model)
-  macro validate_exclusion(field, excluded_values)
-    validate \{{ field }}, "#{\{{ field }}.to_s.capitalize} got reserved values. Reserved values are #{\{{ excluded_values }}.join(",")}" do |model|
-      !\{{ excluded_values }}.any? { |value| value == model.\{{ field.id }} }
-    end
-  end
-end

@@ -1,6 +1,8 @@
 name: test
 
-# Runs every test under SQLite and PostgreSQL, one parallel job per adapter, with `bin/test`.
+# Runs bin/test once per engine: SQLite (required) and Turso (not blocking until M4).
+# The repository and its siblings are checked out side by side, so ris.mod's
+# `replace ../db` and `../sqlite` (and the example's `../../../web`) resolve.
 
 on: [push, pull_request]
 
@@ -11,30 +13,18 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  # The ris commit the tests are built with. Bump it when grant needs a newer compiler.
-  RIS_REF: b1ec7a0cef358a0f350451656b4e48d2c618d751
-
 jobs:
   test:
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 90
+    continue-on-error: ${{ matrix.engine == 'turso' }}
     strategy:
       fail-fast: false
       matrix:
-        adapter: [sqlite, pg]
+        engine: [sqlite, turso]
     container:
       image: crystallang/crystal:1.21.0-build
-    services:
-      postgres:
-        image: postgres:17
-        env:
-          POSTGRES_USER: grant
-          POSTGRES_PASSWORD: password
-        options: >-
-          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
     env:
-      PG_SERVER_URL: postgres://grant:password@postgres:5432
       LC_ALL: C.UTF-8
       GIT_CONFIG_COUNT: "1"
       GIT_CONFIG_KEY_0: safe.directory
@@ -42,34 +32,73 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          path: ricord
+          persist-credentials: false
+      - uses: actions/checkout@v5
+        with:
+          repository: domify/db
+          ref: v0.3.1
+          path: db
+          persist-credentials: false
+      - uses: actions/checkout@v5
+        with:
+          repository: domify/sqlite
+          ref: v0.2.0
+          path: sqlite
+          persist-credentials: false
+      - uses: actions/checkout@v5
+        with:
+          repository: domify/web
+          ref: v0.1.0
+          path: web
           persist-credentials: false
 
       - name: System packages
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends ruby postgresql-client \
+          apt-get install -y --no-install-recommends ruby binutils curl \
             libsqlite3-dev libreadline-dev libssl-dev libncurses-dev
+
+      - name: Read the pins
+        id: pin
+        shell: bash
+        run: |
+          grep -E '^(ris_commit|turso_commit)=' ricord/.ris-version >> "$GITHUB_OUTPUT"
 
       - name: Restore ris
         id: ris-cache
         uses: actions/cache@v5
         with:
           path: ris
-          key: ris-${{ env.RIS_REF }}
+          key: ris-${{ steps.pin.outputs.ris_commit }}
 
       - name: Build ris
         if: steps.ris-cache.outputs.cache-hit != 'true'
         run: |
           git init -q ris
-          git -C ris fetch -q --depth 1 https://github.com/rislang/ris.git "$RIS_REF"
+          git -C ris fetch -q --depth 1 https://github.com/rislang/ris.git "${{ steps.pin.outputs.ris_commit }}"
           git -C ris checkout -q FETCH_HEAD
           make -C ris iyi
 
-      - name: Tests under ${{ matrix.adapter }}
+      - name: Restore libturso
+        id: turso-cache
+        uses: actions/cache@v5
+        with:
+          path: ricord/vendor/turso/lib
+          key: turso-${{ steps.pin.outputs.turso_commit }}
+
+      - name: Build libturso
+        if: steps.turso-cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
+          curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+          export PATH="$HOME/.cargo/bin:$PATH"
+          ricord/bin/build-turso
+
+      - name: Tests on ${{ matrix.engine }}
+        shell: bash
+        working-directory: ricord
+        run: |
           mkdir -p build/tmp
-          # The ris pg driver cannot resolve service hostnames; hand it the address.
-          export PG_SERVER_URL="postgres://grant:password@$(getent hosts postgres | cut -d' ' -f1):5432"
-          TEST_ADAPTERS=${{ matrix.adapter }} TEST_JOBS=$(nproc) RIS=$PWD/ris/bin/ris \
+          RICORD_ENGINE=${{ matrix.engine }} RIS_ANY=1 TEST_JOBS=$(nproc) RIS=$GITHUB_WORKSPACE/ris/bin/ris \
             TMPDIR=$PWD/build/tmp bin/test

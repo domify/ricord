@@ -1,5 +1,0 @@
-module test/grant_error_error_test
-import grant/error
-
-# it: should convert to json
-assert ::Grant::Error::Error.new("field", "error message").to_json == "{\"field\":\"field\",\"message\":\"error message\"}"

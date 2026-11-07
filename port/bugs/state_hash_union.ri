@@ -1,7 +1,0 @@
-module state_hash_probe
-alias Value = Nil | String | Int32 | Int64 | Float32 | Float64 | Bool
-a = {"title" => "Hello", "views" => 3} of String => Value
-b = {"title" => "Hello", "views" => 3} of String => Value
-puts a == b
-puts a["title"] == b["title"]
-puts a["views"] == b["views"]

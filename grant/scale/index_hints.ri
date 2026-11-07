@@ -1,7 +1,0 @@
-module grant/scale/index_hints
-
-import grant/error::{ErrorBase}
-
-# Structural error declaration; behavior is ported with its own specs.
-pub class UnsupportedIndexHintError < ErrorBase
-end

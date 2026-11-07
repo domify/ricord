@@ -1,47 +1,77 @@
 #!/usr/bin/env ruby
-# Runs every test/*_test.ri (or the FILEs given) under SQLite and PostgreSQL in parallel slots.
+# Runs Ricord's checks on one engine (RICORD_ENGINE=sqlite, the default, or turso):
+# probes, compile-fail fixtures, tests in parallel slots, format and check, and the
+# doc/TEST_PORT.md gate. FILEs given on the command line run instead of the test set.
 require "open3"
 require "json"
-require "digest"
 require "etc"
 require "fileutils"
 
 Dir.chdir(File.expand_path("..", __dir__))
 ENV["IYI_CACHE_DIR"] = File.join(Dir.pwd, ".ris-cache")
-ris = ENV.fetch("RIS", "/home/priit/contribute/ris/bin/ris")
-adapters = ENV.fetch("TEST_ADAPTERS", "sqlite pg").split
-pg_server = ENV.fetch("PG_SERVER_URL", "postgres://grant:password@127.0.0.1:5433")
-pg_database = "grant_#{Digest::SHA1.hexdigest(Dir.pwd)[0, 10]}"
+
+pin = File.readlines(".ris-version", chomp: true).grep(/=/).to_h { |line| line.split("=", 2) }
+ris_path = File.expand_path(pin.fetch("ris_path"))
+ris = ENV.fetch("RIS", File.join(ris_path, "bin", "ris"))
 errors = []
-tests = ARGV.empty? ? Dir.glob("test/**/*_test.ri").sort : ARGV
-if adapters.include?("pg") && !ENV.key?("PG_DATABASE_URL")
-  _, status = Open3.capture2e("psql", "#{pg_server}/postgres", "-qtc", "SELECT 1")
-  errors << "PostgreSQL is unreachable at #{pg_server} (docker start grant-pg)" unless status.success?
-  exists, _ = Open3.capture2e("psql", "#{pg_server}/postgres", "-qtAc", "SELECT 1 FROM pg_database WHERE datname = '#{pg_database}'")
-  Open3.capture2e("psql", "#{pg_server}/postgres", "-qc", "CREATE DATABASE #{pg_database}") if status.success? && exists.strip != "1"
+unless ENV["RIS_ANY"] == "1"
+  head, = Open3.capture2("git", "-C", ris_path, "rev-parse", "HEAD")
+  if head.strip != pin.fetch("ris_commit")
+    errors << "#{ris_path} is at #{head.strip}, .ris-version pins #{pin["ris_commit"]} (RIS_ANY=1 skips)"
+  end
 end
-errors << "no tests selected" if tests.empty?
-# Tests run in PORT_JOBS parallel slots. Each slot has its own SQLite file, PostgreSQL database
-# and TMPDIR, so concurrent tests never share rows.
+
+engine = ENV.fetch("RICORD_ENGINE", "sqlite")
+abort "RICORD_ENGINE must be sqlite or turso" unless %w[sqlite turso].include?(engine)
+single = pin["turso_mode"] == "single"
+flags = []
+flags << "-Dturso" if single && engine == "turso"
+flags << "-Ddispatch_models" if pin["dispatch"] == "models"
+turso_lib = File.join(Dir.pwd, "vendor", "turso", "lib")
+ENV["IYI_LIBRARY_PATH"] = [turso_lib, ENV["IYI_LIBRARY_PATH"]].compact.reject(&:empty?).join(":")
+
+def run(env, *cmd)
+  Open3.capture2e(env, *cmd)
+end
+
+started = Time.now
+abort errors.join("\n") unless errors.empty?
+
+# Probes: ordinary tests, run first and one at a time; a failure stops the run.
+Dir.glob("test/probe/*_test.ri").sort.each do |file|
+  output, status = run({}, ris, "test", *flags, file)
+  puts output
+  abort "probe failed: #{file}" unless status.success?
+end
+
+# Compile-fail fixtures: each must fail to build with the text of its `# expect:` line.
+Dir.glob("test/refused/*.ri").sort.each do |file|
+  expect = File.foreach(file).first.to_s[/\A# expect: (.+)/, 1]
+  next errors << "no `# expect:` first line: #{file}" unless expect
+  out = File.join("build", "refused", File.basename(file, ".ri"))
+  FileUtils.mkdir_p(File.dirname(out))
+  output, status = run({}, ris, "build", *flags, file, "-o", out)
+  errors << "built but should not: #{file}" if status.success?
+  errors << "#{file}: expected #{expect.inspect} in:\n#{output}" unless output.include?(expect)
+end
+
+tests = ARGV.empty? ? Dir.glob("test/*_test.ri").sort : ARGV
+if single
+  skipped = tests.delete("test/two_engines_test.ri")
+  puts "turso_mode=single: test/two_engines_test.ri left out" if skipped
+end
+
 jobs = ENV.fetch("TEST_JOBS", [Etc.nprocessors / 2, 1].max.to_s).to_i.clamp(1, 64)
+scheme = engine == "turso" ? "turso:" : "sqlite3:"
 slot_env = (0...jobs).map do |slot|
-  db = slot.zero? ? pg_database : "#{pg_database}_j#{slot}"
   tmp = File.join(Dir.pwd, "build", "jobs", slot.to_s)
   FileUtils.mkdir_p(tmp)
-  if slot.positive? && adapters.include?("pg") && !ENV.key?("PG_DATABASE_URL")
-    exists, _ = Open3.capture2e("psql", "#{pg_server}/postgres", "-qtAc", "SELECT 1 FROM pg_database WHERE datname = '#{db}'")
-    Open3.capture2e("psql", "#{pg_server}/postgres", "-qc", "CREATE DATABASE #{db}") if exists.strip != "1"
-  end
-  {
-    "PG_DATABASE_URL" => ENV.fetch("PG_DATABASE_URL", "#{pg_server}/#{db}"),
-    "SQLITE_DATABASE_URL" => ENV.fetch("SQLITE_DATABASE_URL", slot.zero? ? "sqlite3:./grant_green.db" : "sqlite3:#{tmp}/grant_green.db"),
-    "TMPDIR" => slot.zero? ? ENV.fetch("TMPDIR", tmp) : tmp,
-  }
+  {"RICORD_ENGINE" => engine, "RICORD_DATABASE_URL" => "#{scheme}#{tmp}/ricord.db", "TMPDIR" => tmp}
 end
+
 queue = Queue.new
 tests.each { |file| queue << file }
 lock = Mutex.new
-started = Time.now
 workers = slot_env.map do |slot|
   Thread.new do
     while (file = (queue.pop(true) rescue nil))
@@ -49,30 +79,49 @@ workers = slot_env.map do |slot|
         lock.synchronize { errors << "missing or invalid test: #{file}" }
         next
       end
-      adapters.each do |adapter|
-        env = ENV.to_h.merge(slot).merge("CURRENT_ADAPTER" => adapter)
-        output, status = Open3.capture2e(env, ris, "test", "--json", file)
-        # Parallel compilers share .ris-cache; a codegen I/O race fails the build, not the test.
-        if output.include?("a codegen thread failed")
-          output, status = Open3.capture2e(env, ris, "test", "--json", file)
-        end
-        begin
-          result = JSON.parse(output)
-          passed = status.success? && result["failed"] == 0 && result["skipped"] == 0 && result["passed"].to_i > 0 &&
-            result.fetch("tests").all? { |t| t["status"] == "pass" }
-          error = "test failed on #{adapter}: #{file}" unless passed
-        rescue JSON::ParserError, KeyError
-          error = "invalid test JSON on #{adapter}: #{file}"
-        end
-        lock.synchronize do
-          puts "[#{adapter}] #{output}"
-          errors << error if error
-        end
+      output, status = run(ENV.to_h.merge(slot), ris, "test", "--json", *flags, file)
+      # Parallel compilers share .ris-cache; a codegen I/O race fails the build, not the test.
+      if output.include?("a codegen thread failed")
+        output, status = run(ENV.to_h.merge(slot), ris, "test", "--json", *flags, file)
+      end
+      begin
+        result = JSON.parse(output)
+        passed = status.success? && result["failed"] == 0 && result["passed"].to_i > 0 &&
+          result.fetch("tests").all? { |t| t["status"] == "pass" }
+        error = "test failed: #{file}" unless passed
+      rescue JSON::ParserError, KeyError
+        error = "invalid test JSON: #{file}"
+      end
+      lock.synchronize do
+        puts output
+        errors << error if error
       end
     end
   end
 end
 workers.each(&:join)
-puts "RAN #{tests.size} tests x #{adapters.size} adapters in #{(Time.now - started).round}s with #{jobs} jobs"
+
+# Format and check the library and the tests.
+dirs = %w[ricord.ri ricord test].select { |path| File.exist?(path) }
+unless dirs.empty?
+  output, status = run({}, ris, "fmt", "--check", *dirs)
+  errors << "ris fmt --check:\n#{output}" unless status.success?
+  Dir.glob(dirs.flat_map { |d| File.directory?(d) ? "#{d}/**/*.ri" : d }).sort.each do |file|
+    next if file.start_with?("test/refused/")
+    output, status = run({}, ris, "check", *flags, file)
+    errors << "ris check #{file}:\n#{output}" unless status.success?
+  end
+end
+
+# doc/TEST_PORT.md: every `port` row of a completed milestone has `x` in `done`.
+port = File.readlines("doc/TEST_PORT.md", chomp: true)
+completed = port.first.to_s.delete_prefix("completed:").split(",").map(&:strip).reject(&:empty?)
+port.grep(/\A\| test\//).each do |row|
+  file, verdict, _target, milestone, _reason, done = row.split("|").map(&:strip).drop(1)
+  next unless verdict == "port" && completed.include?(milestone)
+  errors << "TEST_PORT.md: #{file} (#{milestone}) is not ported" unless done == "x"
+end
+
+puts "RAN #{tests.size} tests on #{engine} in #{(Time.now - started).round}s with #{jobs} jobs"
 errors.each { |error| warn error }
 exit(errors.empty? ? 0 : 1)

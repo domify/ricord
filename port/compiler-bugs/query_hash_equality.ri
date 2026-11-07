@@ -1,6 +1,0 @@
-module query_hash_equality
-
-# Expected true, actual false: native Hash equality depends on insertion order.
-# IYI_CACHE_DIR=$PWD/.ris-cache /home/priit/contribute/ris/bin/ris run \
-#   port/compiler-bugs/query_hash_equality.ri
-puts ({"blue" => 10_i64, "red" => 10_i64} == {"red" => 10_i64, "blue" => 10_i64})

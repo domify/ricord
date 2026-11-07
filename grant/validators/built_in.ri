@@ -1,8 +1,0 @@
-module grant/validators/built_in
-
-import std/regex::{Regex}
-
-module CommonFormats
-  EMAIL_REGEX = /\A[\w+\-.]+@[a-zA-Z\d\-]+(\.[a-zA-Z\d\-]+)*\.[a-zA-Z]+\z/
-  URL_REGEX = /\Ahttps?:\/\/(www\.)?[-a-zA-Z0-9@:%._\+~#=]{1,256}\.[a-zA-Z0-9()]{1,6}\b([-a-zA-Z0-9()@:%_\+.~#?&\/\/=]*)\z/
-end

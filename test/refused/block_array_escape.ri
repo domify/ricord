@@ -1,0 +1,13 @@
+# expect: cannot store data made in this block where it outlives the block
+# M0 item 16: an Array made in a session block cannot be assigned to an outer variable.
+module test/refused/block_array_escape
+
+import db/db/db
+import sqlite/sqlite/core
+
+outer = [] of Int64
+::Db::Db.open("sqlite3:%3Amemory%3A") do |db|
+  inner = [1_i64, 2_i64]
+  outer = inner
+end.or_panic
+puts outer.size

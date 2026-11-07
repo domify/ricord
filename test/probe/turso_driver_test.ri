@@ -1,0 +1,90 @@
+# M0 probe 11: the sqlite driver's operations on libturso, both engines in one program,
+# and the Turso behaviours the design depends on (doc/DESIGN.md, M0 item 11).
+module test/probe/turso_driver_test
+
+import std/slice::{Bytes}
+import db/db/db
+import db/db/errors::{DBError}
+import db/db/spec::{describe, it}
+import sqlite/sqlite/turso
+
+def turso_file : String
+  "#{ENV.fetch("TMPDIR", "/tmp")}/probe_turso.db"
+end
+
+describe "turso driver" do
+  it "runs the driver's operations" do
+    ::Db::Db.open("turso:%3Amemory%3A") do |db|
+      db.exec("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT NOT NULL, data BLOB)").or_panic
+      db.exec("INSERT INTO t (name, data) VALUES (?, ?)", "a", Bytes.new(3)).or_panic
+      id = db.scalar("INSERT INTO t (name) VALUES ('b') RETURNING id", as: Int64).or_panic
+      assert id == 2_i64, "RETURNING gave #{id}"
+      assert db.scalar("SELECT length(data) FROM t WHERE id = 1", as: Int64).or_panic == 3_i64
+      assert db.scalar("SELECT count(*) FROM t", as: Int64).or_panic == 2_i64
+    end.or_panic
+  end
+
+  it "keeps the outer write after ROLLBACK TO" do
+    ::Db::Db.open("turso:%3Amemory%3A") do |db|
+      db.exec("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT NOT NULL)").or_panic
+      db.exec("BEGIN IMMEDIATE").or_panic
+      db.exec("INSERT INTO t (name) VALUES ('outer')").or_panic
+      db.exec("SAVEPOINT s1").or_panic
+      failed = db.exec("INSERT INTO t (name) VALUES (NULL)")
+      assert failed.is_a?(DBError), "NOT NULL was not enforced"
+      db.exec("ROLLBACK TO s1").or_panic
+      db.exec("RELEASE s1").or_panic
+      db.exec("COMMIT").or_panic
+      assert db.scalar("SELECT count(*) FROM t", as: Int64).or_panic == 1_i64
+    end.or_panic
+  end
+
+  it "enforces foreign keys" do
+    ::Db::Db.open("turso:%3Amemory%3A") do |db|
+      db.exec("PRAGMA foreign_keys=on").or_panic
+      db.exec("CREATE TABLE p (id INTEGER PRIMARY KEY)").or_panic
+      db.exec("CREATE TABLE c (id INTEGER PRIMARY KEY, p_id INTEGER REFERENCES p(id) ON DELETE CASCADE)").or_panic
+      db.exec("CREATE TABLE r (id INTEGER PRIMARY KEY, p_id INTEGER REFERENCES p(id) ON DELETE RESTRICT)").or_panic
+      db.exec("INSERT INTO p (id) VALUES (1), (2)").or_panic
+      db.exec("INSERT INTO c (p_id) VALUES (1)").or_panic
+      db.exec("INSERT INTO r (p_id) VALUES (2)").or_panic
+      db.exec("DELETE FROM p WHERE id = 1").or_panic
+      assert db.scalar("SELECT count(*) FROM c", as: Int64).or_panic == 0_i64, "no cascade"
+      assert db.exec("DELETE FROM p WHERE id = 2").is_a?(DBError), "no restrict"
+    end.or_panic
+  end
+
+  it "writes a file libsqlite3 reads" do
+    File.delete(turso_file) if File.exists?(turso_file)
+    ::Db::Db.open("turso:#{turso_file}") do |db|
+      db.exec("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)").or_panic
+      db.exec("INSERT INTO t (name) VALUES ('x')").or_panic
+    end.or_panic
+    ::Db::Db.open("sqlite3:#{turso_file}") do |db|
+      assert db.scalar("SELECT name FROM t", as: String).or_panic == "x"
+    end.or_panic
+  end
+
+  it "matches REGEXP on both engines" do
+    patterns = ["^a", "b$", "[0-9]+", "x|bc", "^$"]
+    ::Db::Db.open("sqlite3:%3Amemory%3A") do |lite|
+      ::Db::Db.open("turso:%3Amemory%3A") do |turso|
+        patterns.each do |pattern|
+          sql = "SELECT 'abc12' REGEXP ?"
+          a = lite.scalar(sql, pattern, as: Int64).or_panic
+          b = turso.scalar(sql, pattern, as: Int64).or_panic
+          puts "REGEXP #{pattern}: sqlite #{a}, turso #{b}" unless a == b
+        end
+      end.or_panic
+    end.or_panic
+  end
+
+  it "records numeric and BEGIN CONCURRENT" do
+    ::Db::Db.open("turso:%3Amemory%3A") do |db|
+      numeric = db.exec("CREATE TABLE n (v numeric(10,2)) STRICT")
+      puts "numeric(P,S) in STRICT: #{numeric.is_a?(DBError) ? "refused" : "ok"}"
+      concurrent = db.exec("BEGIN CONCURRENT")
+      puts "BEGIN CONCURRENT: #{concurrent.is_a?(DBError) ? "refused" : "ok"}"
+    end.or_panic
+  end
+end

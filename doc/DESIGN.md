@@ -894,6 +894,24 @@ Paths are relative to the repository root. "Delete" means `git rm`.
 Goal: a clean tree on the pinned compiler, the old Grant tagged, the project renamed, and every
 probe that later milestones rely on passing or recorded.
 
+**As built (M0, 2026-11-07).** Where the code differs from the items below, the code wins:
+
+*   The `turso:` scheme lives in the driver's own module `sqlite/turso` (`import
+    sqlite/sqlite/turso`), not in `sqlite/core`; only a program that imports it links libturso.
+    The lib block it instantiates is defined there and passed to the generic classes as a type
+    argument, which ris allows.
+*   The driver classes are `SQLite3ConnectionOf(L)` and so on, with `SQLite3Connection` etc. as
+    libsqlite3 aliases. Lib types are `alias ... = Void*` (a generic class cannot name
+    `L::Statement` in an ivar type). The FULL-only C calls that pass `"...\0".to_unsafe` sit in
+    top-level helpers (`sqlite3_register_regexp`, `sqlite3_backup`), because macro-expanded code
+    may not call `to_unsafe`. In the macro, `fun` is written `{{"fun".id}}` and names are passed
+    as identifiers.
+*   `libturso_sqlite3` already builds a static library; `bin/build-turso` uses `cargo build`.
+*   Probe results: `dispatch=proc`; `numeric(P,S)` and `BEGIN CONCURRENT` refused on Turso;
+    REGEXP equal on both engines. The `copy_to_other_store` fixture was dropped: `copy_to` into
+    another owner fails with an undefined-method error, not a lifetime one, so it proves nothing.
+*   CI checks the repository out as `ricord/` beside `db/`, `sqlite/` and `web/`.
+
 #### 1. Tag `grant-base-final` (Create)
 
 *   **Type / Scope**: Git tag.

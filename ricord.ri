@@ -1,0 +1,3 @@
+# Ricord: records over SQLite and Turso for ris, one session per block.
+# The design is doc/DESIGN.md; M1 adds the session, store and model macro.
+module ricord

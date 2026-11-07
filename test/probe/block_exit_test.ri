@@ -1,0 +1,24 @@
+# M0 probe 16: values that leave a session block (doc/DESIGN.md, M0 item 16); the refused
+# assignment is test/refused/block_array_escape.ri.
+module test/probe/block_exit_test
+
+import db/db/db
+import db/db/spec::{describe, it}
+import sqlite/sqlite/core
+
+describe "block exit" do
+  it "returns numbers, strings and tuples, and concats Int64 values" do
+    n = ::Db::Db.open("sqlite3:%3Amemory%3A") { |db| db.scalar("SELECT 7", as: Int64).or_panic }.or_panic
+    s = ::Db::Db.open("sqlite3:%3Amemory%3A") { |db| db.scalar("SELECT 'hi'", as: String).or_panic }.or_panic
+    t = ::Db::Db.open("sqlite3:%3Amemory%3A") { |db| {1, "x"} }.or_panic
+    outer = [] of Int64
+    ::Db::Db.open("sqlite3:%3Amemory%3A") do |db|
+      inner = [1_i64, 2_i64]
+      outer.concat(inner)
+    end.or_panic
+    assert n == 7_i64
+    assert s == "hi"
+    assert t[1] == "x"
+    assert outer.size == 2
+  end
+end

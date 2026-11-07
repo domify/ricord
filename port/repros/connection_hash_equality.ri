@@ -1,5 +1,0 @@
-module connection_hash_equality
-# Distinct hashes with identical entries currently compare unequal.
-left = {:writing => "writer", :reading => "reader"}
-right = {:writing => "writer", :reading => "reader"}
-assert left == right

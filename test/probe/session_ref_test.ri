@@ -1,0 +1,48 @@
+# M0 probe 13: an @[OnTape] struct holding a connection and an owner can be built, kept in
+# an Array and passed to a class method; so can a Tx-like struct (doc/DESIGN.md, M0 item 13).
+module test/probe/session_ref_test
+
+import db/db/db
+import db/db/core::{Database}
+import db/db/spec::{describe, it}
+import sqlite/sqlite/core
+
+class ProbeStore
+  getter ids = [] of Int64
+end
+
+@[OnTape]
+struct ProbeSession
+  getter conn : Database
+  getter store : ProbeStore
+
+  def initialize(@conn : Database, @store : ProbeStore)
+  end
+end
+
+@[OnTape]
+struct ProbeTx
+  getter session : ProbeSession
+
+  def initialize(@session : ProbeSession)
+  end
+end
+
+struct ProbeModel
+  def self.[](db : ProbeSession | ProbeTx) : Int64
+    session = db.is_a?(ProbeTx) ? db.session : db
+    session.conn.scalar("SELECT 41 + 1", as: Int64).or_panic
+  end
+end
+
+describe "session reference" do
+  it "passes a session and a tx to a class method" do
+    ::Db::Db.open("sqlite3:%3Amemory%3A") do |conn|
+      store = ProbeStore.new
+      session = ProbeSession.new(conn, store)
+      sessions = [session]
+      assert ProbeModel[sessions[0]] == 42_i64
+      assert ProbeModel[ProbeTx.new(session)] == 42_i64
+    end.or_panic
+  end
+end

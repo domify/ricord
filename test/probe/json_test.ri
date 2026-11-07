@@ -1,0 +1,18 @@
+# M0 probe 14: JSON text held in a store is parsed with std/json and read by String and
+# Symbol keys (doc/DESIGN.md, M0 item 14).
+module test/probe/json_test
+
+import std/json::{JSON}
+import db/db/db
+import db/db/spec::{describe, it}
+import sqlite/sqlite/core
+
+describe "json" do
+  it "parses stored JSON text and reads keys" do
+    text = String::Builder.new
+    text << %({"theme":"dark","size":3})
+    parsed = JSON.parse(text.to_s)
+    assert parsed["theme"].as_s == "dark"
+    assert parsed[:size.to_s].as_i == 3
+  end
+end

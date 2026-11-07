@@ -1,0 +1,63 @@
+# M0 probe 12: row text kept in a store's builder as spans, read back after the query and
+# after later queries (doc/DESIGN.md, M0 item 12). `ProbeStore` and `ProbeRecord` stand in
+# for Ricord's store and records until M1.
+module test/probe/store_text_test
+
+import db/db/db
+import db/db/spec::{describe, it}
+import sqlite/sqlite/core
+
+class ProbeStore
+  getter text = String::Builder.new
+  getter starts = [] of Int32
+  getter sizes = [] of Int32
+
+  def add(value : String) : Int32
+    @starts << text.bytesize
+    @sizes << value.bytesize
+    text << value
+    starts.size - 1
+  end
+
+  def [](index : Int32) : String
+    text.to_s[starts[index], sizes[index]]
+  end
+end
+
+@[OnTape]
+struct ProbeRecord
+  getter store : ProbeStore
+  getter index : Int32
+
+  def initialize(@store : ProbeStore, @index : Int32)
+  end
+
+  def name : String
+    store[index]
+  end
+end
+
+describe "store text" do
+  it "keeps row text as spans in the store" do
+    ::Db::Db.open("sqlite3:%3Amemory%3A") do |db|
+      db.exec("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)").or_panic
+      db.exec("INSERT INTO t (name) VALUES ('alpha'), ('beta'), ('gamma')").or_panic
+      store = ProbeStore.new
+      records = [] of ProbeRecord
+      db.query("SELECT name FROM t ORDER BY id") do |rs|
+        while rs.move_next.or_panic
+          records << ProbeRecord.new(store, store.add(rs.read(String).or_panic))
+        end
+      end.or_panic
+      assert records.size == 3
+      assert records[1].name == "beta"
+      db.query("SELECT name FROM t WHERE id = 3") do |rs|
+        while rs.move_next.or_panic
+          records << ProbeRecord.new(store, store.add(rs.read(String).or_panic))
+        end
+      end.or_panic
+      assert records[0].name == "alpha"
+      assert records[3].name == "gamma"
+    end.or_panic
+  end
+end

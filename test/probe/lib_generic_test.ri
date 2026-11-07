@@ -1,0 +1,38 @@
+# M0 probe 16a: a macro that expands to a `lib` block with a constant, and a class generic
+# over a lib module that reads that constant at compile time (doc/DESIGN.md, M0 item 16a).
+# The sqlite driver's sqlite_lib macro relies on both.
+@[Ffi]
+module test/probe/lib_generic_test
+
+import db/db/db
+import db/db/spec::{describe, it}
+import sqlite/sqlite/core
+
+macro probe_lib(name, link, prefix, full)
+  @[Link({{link.stringify}})]
+  lib {{name.id}}
+    FULL = {{full}}
+    {{"fun".id}} libversion_number = {{prefix.id}}libversion_number : Int32
+  end
+end
+
+probe_lib(ProbeFull, sqlite3, sqlite3_, true)
+probe_lib(ProbeThin, sqlite3, sqlite3_, false)
+
+class ProbeConn(L)
+  def version : Int32
+    L.libversion_number
+  end
+
+  def full? : Bool
+    {% if L.resolve.constant("FULL") %} true {% else %} false {% end %}
+  end
+end
+
+describe "lib generic" do
+  it "builds lib blocks from a macro and dispatches on them" do
+    assert ProbeConn(ProbeFull).new.version > 3000000
+    assert ProbeConn(ProbeFull).new.full?
+    assert !ProbeConn(ProbeThin).new.full?
+  end
+end

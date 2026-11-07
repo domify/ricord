@@ -1,8 +1,0 @@
-module grant/polymorphic_types
-
-# Upstream's compile-time polymorphic type table; Base registers each model here.
-pub REGISTERED_TYPES = {} of String => ASTNode
-
-pub macro register_polymorphic_type(name, klass)
-  {% REGISTERED_TYPES[name] = klass %}
-end

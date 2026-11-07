@@ -1,2 +1,0 @@
-module test/adapter_sqlite_test
-import test/spec_helper

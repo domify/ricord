@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Builds libturso as a static library with its C symbols renamed sqlite3_* -> turso_*, so it
+# links next to libsqlite3 in one binary (doc/DESIGN.md, M0 item 10).
+set -euo pipefail
+cd "$(dirname "$0")/.."
+version=v0.8.3
+src=vendor/turso/src
+out=vendor/turso/lib
+if [ ! -d "$src" ]; then
+  git clone -q --depth 1 --branch "$version" https://github.com/tursodatabase/turso.git "$src"
+fi
+(cd "$src" && cargo metadata --no-deps --format-version 1 | grep -q '"name":"turso_sqlite3"') ||
+  { echo "build-turso: package turso_sqlite3 not found in $src" >&2; exit 1; }
+(cd "$src" && cargo build -q -p turso_sqlite3 --release)
+archive=$src/target/release/libturso_sqlite3.a
+mkdir -p "$out"
+nm --defined-only "$archive" 2>/dev/null |
+  awk '$3 ~ /^sqlite3_/ {print $3, "turso_" substr($3, 9)}' | sort -u > "$out/turso.syms"
+objcopy --redefine-syms="$out/turso.syms" "$archive" "$out/libturso.a"
+if nm "$out/libturso.a" 2>/dev/null | grep -q ' sqlite3_'; then
+  echo "build-turso: sqlite3_ symbols remain in $out/libturso.a" >&2
+  exit 1
+fi
+commit=$(git -C "$src" rev-parse HEAD)
+touch .ris-version
+grep -v '^turso_\(version\|commit\)=' .ris-version > .ris-version.tmp || true
+printf 'turso_version=%s\nturso_commit=%s\n' "$version" "$commit" >> .ris-version.tmp
+mv .ris-version.tmp .ris-version
+echo "build-turso: $out/libturso.a ($(wc -l < "$out/turso.syms") symbols renamed)"

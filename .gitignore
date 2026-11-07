@@ -4,22 +4,8 @@
 *.db
 *.db-*
 *.sqlite3
-/port/codex*.log
-/port/last*.txt
-/port/worktrees/
 /lib/
+/vendor/turso/src/
+/vendor/turso/lib/
 /.crystal-cache/
-/port/gate-*.log
-/port/rebase-*.log
-/port/hint-*.txt
-/port/status.log
-/port/stage-b-*.log
-/port/feedback/
-/port/stage-b-*.out
-
-# Local port loop artifacts
-port/rounds.*
-*.grant-lock-*
-port/run-port-*.sh
-port/run-port-resume.out
 /.iyi-cache/

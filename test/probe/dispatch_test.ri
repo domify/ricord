@@ -1,0 +1,33 @@
+# M0 probe 15: a non-capturing proc to a class method kept in a flat struct in an Array and
+# called after the block that queued it (doc/DESIGN.md, M0 item 15). Passing: dispatch=proc.
+module test/probe/dispatch_test
+
+import db/db/db
+import db/db/spec::{describe, it}
+import sqlite/sqlite/core
+
+struct Item
+  getter key : Int64
+  getter call : Proc(Int64, Int64)
+
+  def initialize(@key : Int64, @call : Proc(Int64, Int64))
+  end
+end
+
+struct Court
+  def self.after_commit(key : Int64) : Int64
+    key * 2
+  end
+end
+
+describe "dispatch" do
+  it "calls a stored proc to a class method later" do
+    queue = [] of Item
+    [1_i64, 2_i64].each do |key|
+      queue << Item.new(key, ->Court.after_commit(Int64))
+    end
+    sum = 0_i64
+    queue.each { |item| sum += item.call.call(item.key) }
+    assert sum == 6_i64
+  end
+end
