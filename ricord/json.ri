@@ -1,0 +1,39 @@
+# A `:json` column's value: the JSON text in the store, parsed on read
+# (doc/DESIGN.md, M1 item 9). `[]` returns a key's value as text (a string's
+# contents, or the JSON of anything else), kept in the store's text.
+module ricord/json
+
+import std/json::{JSON}
+import ricord/values::{TextSpan}
+import ricord/storage::{Store}
+
+@[OnTape]
+pub struct Json
+  getter store : Store
+  getter span : TextSpan
+
+  def initialize(@store : Store, @span : TextSpan)
+  end
+
+  # The JSON text.
+  def text : String
+    @store.span_text(@span)
+  end
+
+  def empty? : Bool
+    @span.size == 0
+  end
+
+  def [](key : String) : String | Nil
+    return nil if empty?
+    parsed = JSON.parse(text)
+    value = parsed[key]?
+    return nil if value.nil?
+    raw = value.raw
+    @store.view_text(raw.is_a?(String) ? raw : value.to_json)
+  end
+
+  def [](key : Symbol) : String | Nil
+    self[key.to_s]
+  end
+end

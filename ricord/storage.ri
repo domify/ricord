@@ -51,7 +51,7 @@ pub class Store
   getter starts = [] of Int32
   getter values = [] of Value
   getter text = String::Builder.new
-  getter bytes = [] of UInt8
+  getter blobs = String::Builder.new
   getter changed = [] of Bool
   getter flags = [] of UInt8
   getter scopes = [] of Int32
@@ -125,14 +125,43 @@ pub class Store
     TextSpan.new(start, value.bytesize)
   end
 
+  # Appends *value* and returns a view of it in the store's text.
+  def view_text(value : String) : String
+    span = add_text(value)
+    @text.to_s[span.start, span.size]
+  end
+
+  # Appends the bytes of *value* (a BLOB read as a String) to `bytes`.
+  def add_byte_string(value : String) : ByteSpan
+    start = @blobs.bytesize
+    @blobs << value
+    ByteSpan.new(start, value.bytesize)
+  end
+
   def set_text(index : Int32, col : Int32, value : String) : Nil
     set_slot(index, col, add_text(value))
   end
 
   def add_bytes(value : Bytes) : ByteSpan
-    start = @bytes.size
-    value.each { |b| @bytes << b }
+    start = @blobs.bytesize
+    value.each { |b| @blobs.push(b) }
     ByteSpan.new(start, value.size)
+  end
+
+  # A BLOB's bytes as hex text, kept in `text`: bound as text and turned back
+  # into a BLOB by `unhex(?)` (libturso refuses text that is not UTF-8).
+  def blob_hex(span : ByteSpan) : String
+    hex = ""
+    digits = "0123456789abcdef"
+    span.size.times do |i|
+      b = blob_byte(span, i)
+      hex << digits[(b >> 4).to_i32, 1] << digits[(b & 0x0F_u8).to_i32, 1]
+    end
+    view_text(hex)
+  end
+
+  def blob_byte(span : ByteSpan, index : Int32) : UInt8
+    @blobs.to_s.byte_at(span.start + index)
   end
 
   def flag?(index : Int32, bit : Int32) : Bool

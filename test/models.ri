@@ -31,3 +31,9 @@ model User do
   col :email, :string
   col :admin, :boolean, default: false
 end
+
+model Setting do
+  table :settings
+  col :prefs, :json, default: "{}"
+  col :photo, :binary, null: true
+end

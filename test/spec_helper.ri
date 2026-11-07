@@ -22,6 +22,7 @@ pub def with_db(log : Bool = true, & : Session -> Nil) : Nil
     Court.create_table(db).or_panic
     Case.create_table(db).or_panic
     User.create_table(db).or_panic
+    Setting.create_table(db).or_panic
     db.release
     yield db
   end.or_panic

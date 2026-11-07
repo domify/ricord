@@ -1,0 +1,27 @@
+# A `:binary` column's value: bytes in the store (doc/DESIGN.md, M1 item 9).
+module ricord/blob
+
+import ricord/values::{ByteSpan}
+import ricord/storage::{Store}
+
+@[OnTape]
+pub struct Blob
+  getter store : Store
+  getter span : ByteSpan
+
+  def initialize(@store : Store, @span : ByteSpan)
+  end
+
+  def bytesize : Int32
+    @span.size
+  end
+
+  def byte_at(index : Int32) : UInt8
+    @store.blob_byte(@span, index)
+  end
+
+  def each_byte(& : UInt8 -> Nil) : Nil
+    @span.size.times { |i| yield @store.blob_byte(@span, i) }
+    nil
+  end
+end

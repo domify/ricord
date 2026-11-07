@@ -1259,6 +1259,25 @@ probe that later milestones rely on passing or recorded.
 Goal: one model can be created, found, listed, changed and deleted on SQLite and Turso through `Ricord.open`,
 `Model[db]` and `db.write`, with tables from `create_sql` and SQL checked through the log.
 
+**As built (M1, 2026-11-07).** Where the code differs from the items below, the code wins:
+
+*   Module files are plural where a type of the same name lives in them, because a module path
+    is also a namespace and `Ricord::Session` would name the module, not the struct:
+    `ricord/values`, `ricord/failures` (the error structs; `Error` is the union there),
+    `ricord/storage` (`Store`), `ricord/dialects`, `ricord/sessions` (`Session`, `Tx`, `Db`).
+*   Store text spans are `Ricord::Values::TextSpan` (two `Int32`s), not `String::Span`, which
+    the compiler treats as a view a def may not return. BLOBs live in a second builder and bind
+    as hex text through `unhex(?)`, because libturso refuses non-UTF-8 text binds.
+*   Error structs keep only numeric extra fields (`id`, `count`, `code`); text extras are part of
+    the message.
+*   `Court.create_table(db)` runs the DDL; there is no `SCHEMA.create_sql` (a def cannot return
+    an array of strings it built).
+*   Generated code is expanded in the user's file, so it names every type fully
+    (`::Ricord::...`, `::Std::Time::Time`) and leaves NamedTuple/Tuple iteration to helpers in
+    `ricord/model`.
+*   Deferred: the `OffsetQuery` type split moves to M4 with `each`; the hold-warning log test and
+    porting the M1 rows of `doc/TEST_PORT.md` are still open, so `completed:` stays empty.
+
 #### 1. `ricord/value.ri` (Create)
 
 *   **Proposed Changes**: `alias Ricord::Value = Nil | Bool | Int64 | Float64 | Time |

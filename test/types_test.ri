@@ -1,0 +1,33 @@
+# M1: :json read by String and Symbol keys, :binary as a Blob, Time round trip.
+module test/types_test
+
+import std/time::{Time}
+import std/slice::{Bytes}
+import db/db/spec::{describe, it}
+import test/spec_helper::*
+import test/models::*
+
+describe "types" do
+  it "reads json keys and binary bytes" do
+    with_db do |db|
+      photo = Bytes.new(3) { |i| (i + 250).to_u8 }
+      created = Setting.create(db, prefs: %({"theme":"dark","size":3}), photo: photo).or_panic
+      s = Setting[db].find(created.id).or_panic
+      assert s.prefs["theme"] == "dark"
+      assert s.prefs[:size] == "3"
+      assert s.prefs["missing"].nil?
+      assert s.photo.bytesize == 3
+      assert s.photo.byte_at(2) == 252_u8
+      assert db.scalar("SELECT typeof(photo) FROM settings", String).or_panic == "blob"
+    end
+  end
+
+  it "round-trips a Time with microseconds" do
+    with_db do |db|
+      at = Time.utc(2026, 11, 7, 10, 5, 3, nanosecond: 123456000)
+      court = Court.create(db, name: "t", opened_at: at).or_panic
+      read = Court[db].find(court.id).or_panic.opened_at
+      assert read == at, "read #{read.inspect}"
+    end
+  end
+end
