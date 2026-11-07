@@ -3,7 +3,7 @@
 # contents, or the JSON of anything else), kept in the store's text.
 module ricord/json
 
-import std/json::{JSON}
+import std/json::{JSON, Any}
 import ricord/values::{TextSpan}
 import ricord/storage::{Store}
 
@@ -36,4 +36,76 @@ pub struct Json
   def [](key : Symbol) : String | Nil
     self[key.to_s]
   end
+end
+
+# `json_field` support (doc/DESIGN.md, M2 item 3). A reader returns the key's
+# value when it has the field's type, nil for a missing key (or a column that is
+# not a JSON object), and `WRONG_TYPE` for a value of another type; the
+# generated getter turns nil and `WRONG_TYPE` into the default.
+pub struct WrongType
+end
+
+pub WRONG_TYPE = WrongType.new
+
+private def json_value(store : Store, span : TextSpan, key : String) : Any | Nil
+  return nil if span.size == 0
+  parsed = JSON.parse?(store.span_text(span))
+  return nil if parsed.nil?
+  fields = parsed.as_h?
+  return nil if fields.nil?
+  fields[key]?
+end
+
+pub def read_string_field(store : Store, span : TextSpan, key : String) : String | WrongType | Nil
+  value = json_value(store, span, key)
+  return nil if value.nil?
+  raw = value.raw
+  raw.is_a?(String) ? store.view_text(raw) : WRONG_TYPE
+end
+
+pub def read_integer_field(store : Store, span : TextSpan, key : String) : Int64 | WrongType | Nil
+  value = json_value(store, span, key)
+  return nil if value.nil?
+  raw = value.raw
+  raw.is_a?(Int64) ? raw : WRONG_TYPE
+end
+
+# A JSON integer reads as a float too.
+pub def read_float_field(store : Store, span : TextSpan, key : String) : Float64 | WrongType | Nil
+  value = json_value(store, span, key)
+  return nil if value.nil?
+  raw = value.raw
+  return raw if raw.is_a?(Float64)
+  raw.is_a?(Int64) ? raw.to_f64 : WRONG_TYPE
+end
+
+pub def read_boolean_field(store : Store, span : TextSpan, key : String) : Bool | WrongType | Nil
+  value = json_value(store, span, key)
+  return nil if value.nil?
+  raw = value.raw
+  raw.is_a?(Bool) ? raw : WRONG_TYPE
+end
+
+# Rewrites slot *col* of record *index* (a JSON column) with *key* set to
+# *value* (nil writes JSON null) and marks it changed; other keys keep their
+# order and values, *key* goes last. A column that is empty or not a JSON object
+# starts from `{}`.
+pub def set_field(store : Store, index : Int32, col : Int32, key : String, value : String | Int64 | Float64 | Bool | Nil) : Nil
+  slot = store.slot(index, col)
+  span = slot.is_a?(TextSpan) ? slot : TextSpan.new(0, 0)
+  parsed = span.size == 0 ? nil : JSON.parse?(store.span_text(span))
+  fields = parsed.nil? ? nil : parsed.as_h?
+  text = JSON.build do |json|
+    json.object do
+      fields.each { |k, v| json.field(k, v) unless k == key } if fields
+      case value
+      when String  then json.field(key, value)
+      when Int64   then json.field(key, value)
+      when Float64 then json.field(key, value)
+      when Bool    then json.field(key, value)
+      else              json.field(key, nil)
+      end
+    end
+  end
+  store.set_text(index, col, text)
 end

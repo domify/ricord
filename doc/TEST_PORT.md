@@ -42,7 +42,7 @@ completed: M1
 | test/grant_attributes_normalized_query_test.ri | defer |  |  | attribute API extras are not in v1 | |
 | test/grant_attributes_normalizes_test.ri | defer |  |  | attribute API extras are not in v1 | |
 | test/grant_attributes_reflection_test.ri | defer |  |  | attribute API extras are not in v1 | |
-| test/grant_attributes_store_accessor_test.ri | port | test/json_field_test.ri | M2 |  | |
+| test/grant_attributes_store_accessor_test.ri | port | test/json_field_test.ri | M2 | store_accessor becomes json_field: defaults without a value, typed keys written and persisted, a key write marks the json column changed and an UPDATE saves it from a loaded record; per-key `<key>_changed?`/`_was`, the parse cache and prefix:/suffix: names are not in doc/DESIGN.md | x |
 | test/grant_attributes_w6_alias_query_test.ri | defer |  |  | attribute API extras are not in v1 | |
 | test/grant_boolean_predicates_test.ri | drop |  |  | schema tenants and replica lag tracking removed | |
 | test/grant_callbacks_abort_test.ri | port | test/callback_test.ri | M2 | a refusal at each create, update and destroy stage runs no later callback, returns CallbackError naming the callback, leaves no row (or the old row) and keeps new_record? and the unsaved changes; a refused save inside a write rolls back only its savepoint; after_rollback is M2 part B; an after_destroy refusal rolls the DELETE back (Grant kept it deleted); the refusal is the returned CallbackError, not an errors entry | x |
@@ -111,13 +111,13 @@ completed: M1
 | test/grant_convenience_methods_query_test.ri | port | test/crud_test.ri | M4 | pluck, pick and batches are M4; sole, find_sole_by, annotate, destroy_by, delete_by, touch_all and update_counters not built and not planned in doc/DESIGN.md | |
 | test/grant_convenience_relation_finders_test.ri | port | test/crud_test.ri | M1 | find_by and find on a query, nil as IS NULL, query unchanged; find_by!, find_sole_by and named scopes not built | x |
 | test/grant_converters_enum_test.ri | defer |  |  | enums are in Future Improvements | |
-| test/grant_converters_json_test.ri | port | test/json_field_test.ri | M2 |  | |
+| test/grant_converters_json_test.ri | defer |  |  | converting an object to and from JSON text (Converters::Json over String, JSON::Any and Bytes) is not in doc/DESIGN.md; a :json column holds text and json_field reads typed keys | |
 | test/grant_converters_pg_numeric_test.ri | drop |  |  | PostgreSQL or MySQL only | |
-| test/grant_dirty_changes_to_save_test.ri | port | test/dirty_test.ri | M2 |  | |
-| test/grant_dirty_dirty_control_test.ri | port | test/dirty_test.ri | M2 |  | |
-| test/grant_dirty_dirty_tracking_test.ri | port | test/dirty_test.ri | M2 |  | |
-| test/grant_dirty_mutation_detection_test.ri | port | test/dirty_test.ri | M2 |  | |
-| test/grant_dirty_saved_changes_test.ri | port | test/dirty_test.ri | M2 |  | |
+| test/grant_dirty_changes_to_save_test.ri | port | test/dirty_test.ri | M2 | pending changes as changed?/changed_attributes, cleared by a save; changes_to_save hashes, attributes_in_database, `<col>_in_database`, change_to_be_saved tuples and the GC allocation check are not in doc/DESIGN.md (Ricord keeps no old values) | x |
+| test/grant_dirty_dirty_control_test.ri | defer |  |  | restore_attributes, clear_changes_information, changes_applied, clear_attribute_changes and will_change! are not in doc/DESIGN.md (Ricord keeps no old values); Array columns are not Ricord columns | |
+| test/grant_dirty_dirty_tracking_test.ri | port | test/dirty_test.ri | M2 | `<col>_changed?`, changed?, changed_attributes (several columns), cleared after a save, setting the saved value is no change; `_was`, `_change`, changes, restore_attributes, previous_changes and a revert to the original clearing the mark need old values, not in doc/DESIGN.md; a new record's given columns count as changed (they are what the INSERT writes) | x |
+| test/grant_dirty_mutation_detection_test.ri | defer |  |  | in-place mutation detection of Array and serialized columns is not in Ricord (no Array columns, a :json column is text; a json_field write marks the column, in json_field_test) | |
+| test/grant_dirty_saved_changes_test.ri | defer |  |  | saved_changes, saved_change_to_`<col>`? with from:/to:, previously_was and previously_changed? need old values, not in doc/DESIGN.md | |
 | test/grant_encryption_context_test.ri | defer |  |  | encryption is in Future Improvements | |
 | test/grant_encryption_database_test.ri | defer |  |  | encryption is in Future Improvements | |
 | test/grant_encryption_key_rotation_test.ri | defer |  |  | encryption is in Future Improvements | |
@@ -170,22 +170,22 @@ completed: M1
 | test/grant_perf_w6_statement_count_writes_test.ri | port | test/group_loading_test.ri | M3 |  | |
 | test/grant_persistence_destroyed_guard_test.ri | port | test/crud_test.ri | M1 | in-memory reads after destroy, no row written back, live records unaffected; the RecordDestroyedError guard is not built (save of a destroyed record runs an UPDATE that changes no row); frozen?, update*, touch and increment not built | x |
 | test/grant_persistence_direct_persistence_test.ri | defer |  |  | update_columns, increment!, touch and read-only attributes not built and not planned in doc/DESIGN.md; per-column dirty API is M2 | |
-| test/grant_persistence_dirty_tracking_api_test.ri | port | test/dirty_test.ri | M2 |  | |
+| test/grant_persistence_dirty_tracking_api_test.ri | defer |  |  | will_save_change_to_`<col>`? with from:/to: is not in doc/DESIGN.md, and a new record's given columns count as changed in Ricord (Grant starts clean) | |
 | test/grant_persistence_dup_clone_test.ri | defer |  |  | record dup and clone are not built | |
 | test/grant_persistence_equality_test.ri | defer |  |  | record == and hash by table and id are not built (two finds of one row are different records) | |
 | test/grant_persistence_helpers_operations_test.ri | defer |  |  | update_attribute, update_columns, increment, decrement and toggle are not built; the callback and validation parts are M2 | |
 | test/grant_persistence_ivar_initializer_save_test.ri | drop |  |  | a generated-Amber-app probe of Grant class-level settings (replica lag, default scope); saving is covered by crud_test | |
 | test/grant_persistence_mass_assignment_test.ri | defer |  |  | update(**attrs) and previous_changes are not built; a wrong value type is a build error in the typed new, not a ConversionError | |
-| test/grant_persistence_no_touching_test.ri | port | test/dirty_test.ri | M2 |  | |
+| test/grant_persistence_no_touching_test.ri | port | test/dirty_test.ri | M2 | a normal save that changes a column still moves updated_at; touch, no_touching, suppress, STI subclasses and fiber-local state are not in doc/DESIGN.md | x |
 | test/grant_persistence_primary_key_mass_assignment_test.ri | defer |  |  | new and create take no id: argument, so an explicit primary key cannot be given | |
 | test/grant_persistence_read_only_transaction_create_test.ri | defer |  |  | read-only transactions are PostgreSQL/MySQL only; the SQLite scenario needs create with an explicit id: and RecordNotSaved with a cause, neither built | |
-| test/grant_persistence_touch_options_test.ri | port | test/dirty_test.ri | M2 |  | |
+| test/grant_persistence_touch_options_test.ri | port | test/dirty_test.ri | M2 | a save that changes a column stamps updated_at in the same UPDATE; touch(time:), touch of named columns, increment!/decrement! with touch: and update_column are not in doc/DESIGN.md | x |
 | test/grant_persistence_transaction_lifecycle_failure_test.ri | port | test/write_test.ri | M2 | needs around_save and after_commit callbacks (M2) | |
 | test/grant_persistence_transaction_lifecycle_state_test.ri | defer |  |  | store flags and values are not reset when a write rolls back; the savepoint row behaviour is already in write_test | |
 | test/grant_persistence_update_counters_test.ri | defer |  |  | update_counters (and touch) are not built | |
 | test/grant_persistence_w6_assign_unknown_key_test.ri | port | test/refused/unknown_column_key.ri | M1 | an unknown key is a build error of the typed new; assign_attributes, attributes=, alias_attribute and string-keyed hashes not in Ricord | x |
 | test/grant_persistence_w6_model_name_test.ri | defer |  |  | model_name, pluralization, human names and I18n are not built | |
-| test/grant_persistence_w6_timestamps_test.ri | port | test/dirty_test.ri | M2 |  | |
+| test/grant_persistence_w6_timestamps_test.ri | port | test/dirty_test.ri | M2 | the stamp kept in memory equals the stored one (microseconds, cut by write_time); precision:, date_timestamps, set_timestamps, touch, touch_all and record_timestamps= are not in doc/DESIGN.md | x |
 | test/grant_public_api_return_types_associations_test.ri | port | test/association_test.ri | M3 |  | |
 | test/grant_public_api_return_types_test.ri | port | test/crud_test.ri | M1 | types of Court[db], where, order/limit/offset, to_a, first, find_by, find, count, exists?, new, create and reload; Collection, find_each, scalar, sole, import_records and WhereChain not in Ricord | x |
 | test/grant_query_advanced_query_test.ri | defer |  |  | merge, dup of a query, where-chain operators (not_in, like, gt, between), subqueries and EXISTS are not built | |
@@ -313,8 +313,8 @@ completed: M1
 | test/grant_transactions_import_test.ri | port | test/write_test.ri | M4 | import_records is a bulk write (M4); upserts on a non-auto key need settable primary keys, not in Ricord | |
 | test/grant_transactions_save_natural_key_test.ri | defer |  |  | String (natural) primary keys are not in Ricord (column 0 is always the integer id) | |
 | test/grant_transactions_save_test.ri | port | test/write_test.ri | M1 | save inserts then updates, new_record? and persisted? move; validations, type conversion errors and skip_timestamps are M2; a new record with another's id needs a settable id, not in Ricord | x |
-| test/grant_transactions_timestamp_precision_test.ri | port | test/dirty_test.ri | M2 |  | |
-| test/grant_transactions_touch_test.ri | port | test/dirty_test.ri | M2 |  | |
+| test/grant_transactions_timestamp_precision_test.ri | port | test/dirty_test.ri | M2 | assigned stamps with microseconds are kept by a create and read back equal, a later changing save moves updated_at with subsecond precision; set_timestamps and save(skip_timestamps:) become assigning the columns, touch is not in doc/DESIGN.md | x |
+| test/grant_transactions_touch_test.ri | defer |  |  | touch (with named columns and its errors) is not in doc/DESIGN.md; updated_at moving on a changing save is in dirty_test | |
 | test/grant_transactions_update_test.ri | port | test/write_test.ri | M1 | a setter and save update a row, nil saved into a nullable column; update(**attrs), validations and timestamps are M2 | x |
 | test/grant_validation_helpers_blank_test.ri | port | test/validation_test.ri | M2 | not-blank as presence: empty and whitespace-only text fail; is_blank (absence) and Grant's "must not be blank" wording are not in doc/DESIGN.md (Rails message "can't be blank") | x |
 | test/grant_validation_helpers_choice_test.ri | port | test/validation_test.ri | M2 | inclusion over a String list and an integer list; the message is Rails' "is not included in the list", not Grant's choice list; Symbol choices are not in Ricord | x |

@@ -1,0 +1,131 @@
+# M2: `json_field :col, :key, :type, default:` reads a key of a :json column
+# (the default for a missing key, the default and a warning for a value of
+# another type) and its setter rewrites the column's JSON text and marks the
+# column changed.
+module test/json_field_test
+
+import std/log::{RisMemoryBackend, Severity}
+import db/db/spec::{describe, it}
+import ricord
+import ricord/model::{model}
+import ricord/sessions::{LOG}
+import test/spec_helper::*
+import test/models::*
+
+model Member do
+  table :members
+  col :name, :string, null: true
+  col :settings, :json, default: "{}"
+  json_field :settings, :theme, :string, default: "light"
+  json_field :settings, :notifications, :boolean, default: true
+  json_field :settings, :volume, :integer, default: 5
+  json_field :settings, :ratio, :float, default: 1.5
+  json_field :settings, :locale, :string
+end
+
+def with_members(& : Ricord::Sessions::Session -> Nil) : Nil
+  with_db do |db|
+    Member.create_table(db).or_panic
+    yield db
+  end
+end
+
+describe "json_field" do
+  it "returns the default for a missing key" do
+    with_members do |db|
+      member = Member.new(db)
+      assert member.theme == "light"
+      assert member.notifications
+      assert member.volume == 5_i64
+      assert member.ratio == 1.5
+      assert member.locale.nil?
+      saved = Member.create(db, name: "a").or_panic
+      loaded = Member[db].find(saved.id).or_panic
+      assert loaded.theme == "light"
+      assert loaded.volume == 5_i64
+    end
+  end
+
+  it "reads each type from the column" do
+    with_members do |db|
+      member = Member.create(db, settings: %({"theme":"dark","notifications":false,"volume":11,"ratio":0.25,"locale":"en"})).or_panic
+      loaded = Member[db].find(member.id).or_panic
+      assert loaded.theme == "dark"
+      assert !loaded.notifications
+      assert loaded.volume == 11_i64
+      assert loaded.ratio == 0.25
+      assert loaded.locale == "en"
+    end
+  end
+
+  it "reads a JSON integer as a float" do
+    with_members do |db|
+      assert Member.new(db, settings: %({"ratio":2})).ratio == 2.0
+    end
+  end
+
+  it "returns the default and logs a warning for a value of another type" do
+    memory = RisMemoryBackend.on_program
+    LOG.backend = memory
+    with_members do |db|
+      member = Member.new(db, settings: %({"theme":7,"notifications":"yes","volume":"11","ratio":true}))
+      assert member.theme == "light"
+      assert member.notifications
+      assert member.volume == 5_i64
+      assert member.ratio == 1.5
+      warnings = memory.entries.count { |e| e.severity == Severity::Warn && e.message.includes?("members.settings") }
+      assert warnings == 4, "one warning per wrong-typed read"
+      assert memory.entries.any? { |e| e.message.includes?("key volume is not of type integer") }
+    end
+    LOG.backend = nil
+  end
+
+  it "writes typed keys, keeps the others and persists them" do
+    with_members do |db|
+      member = Member.new(db, name: "a", settings: %({"extra":[1,2]}))
+      member.theme = "dark"
+      member.volume = 11
+      member.ratio = 3
+      member.locale = "en"
+      member.notifications = false
+      member.save.or_panic
+      loaded = Member[db].find(member.id).or_panic
+      assert loaded.theme == "dark"
+      assert loaded.volume == 11_i64
+      assert loaded.ratio == 3.0
+      assert loaded.locale == "en"
+      assert !loaded.notifications
+      assert loaded.settings["extra"] == "[1,2]", "other keys are kept"
+      loaded.locale = nil
+      assert loaded.locale.nil?
+      assert loaded.settings.text.includes?(%("locale":null))
+    end
+  end
+
+  it "marks the column changed and saves it" do
+    with_members do |db|
+      created = Member.create(db, name: "d").or_panic
+      member = Member[db].find(created.id).or_panic
+      assert !member.settings_changed?
+      member.volume = 9
+      assert member.settings_changed?
+      assert member.changed_attributes == ["settings"]
+      start = db.statements.size
+      member.save.or_panic
+      assert !member.settings_changed?
+      updated = false
+      db.statements.each_with_index { |s, i| updated = true if i >= start && s.starts_with?("UPDATE") && s.includes?("`settings` = ?") }
+      assert updated
+      assert Member[db].find(member.id).or_panic.volume == 9_i64
+    end
+  end
+
+  it "starts from an empty object when the column is not a JSON object" do
+    with_members do |db|
+      member = Member.new(db, settings: "[1]")
+      assert member.theme == "light"
+      member.theme = "dark"
+      assert member.settings.text == %({"theme":"dark"})
+    end
+  end
+end

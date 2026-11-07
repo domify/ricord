@@ -171,6 +171,12 @@ pub def order_dirs(store : Store, last : Int32, columns : Array(String), cols : 
   last
 end
 
+# Whether a text slot already holds *value* (nil for a NULL slot).
+pub def same_text?(store : Store, current : Value, value : String | Nil) : Bool
+  return current.nil? if value.nil?
+  current.is_a?(TextSpan) && store.span_text(current) == value
+end
+
 private def column_of(columns : Array(String), name : String) : Int32
   columns.each_with_index { |c, i| return i if c == name }
   0
@@ -196,6 +202,9 @@ pub macro model(name, &block)
   {% checks = [] of ASTNode %}
   {% validations = [] of ASTNode %}
   {% custom_validations = [] of ASTNode %}
+  {% json_fields = [] of ASTNode %}
+  {% expand_timestamps = false %}
+  {% stamps = false %}
   {% callbacks = {"before_validation" => [] of ASTNode, "after_validation" => [] of ASTNode, "before_save" => [] of ASTNode, "after_save" => [] of ASTNode, "before_create" => [] of ASTNode, "after_create" => [] of ASTNode, "before_update" => [] of ASTNode, "after_update" => [] of ASTNode, "before_destroy" => [] of ASTNode, "after_destroy" => [] of ASTNode} %}
   {% for e in exprs %}
     {% if e.is_a?(Call) && e.name == "table" %}
@@ -203,6 +212,15 @@ pub macro model(name, &block)
       {% table = arg.is_a?(StringLiteral) ? arg : (arg.is_a?(SymbolLiteral) ? arg.id.stringify : (arg.is_a?(Call) && arg.name == "view" ? arg.args[0] : arg.stringify)) %}
     {% elsif e.is_a?(Call) && e.name == "col" %}
       {% cols << e %}
+    {% elsif e.is_a?(Call) && e.name == "cols" %}
+      {% unless e.args.size == 1 && e.args[0].is_a?(SymbolLiteral) && e.args[0].id == "timestamps" %}
+        {% raise "model #{name}: cols takes :timestamps" %}
+      {% end %}
+      {% expand_timestamps = true %}
+    {% elsif e.is_a?(Call) && e.name == "__timestamps" %}
+      {% stamps = true %}
+    {% elsif e.is_a?(Call) && e.name == "json_field" %}
+      {% json_fields << e %}
     {% elsif e.is_a?(Call) && e.name == "index" %}
       {% indexes << e %}
     {% elsif e.is_a?(Call) && e.name == "check_constraint" %}
@@ -233,7 +251,29 @@ pub macro model(name, &block)
       {% end %}
     {% end %}
   {% end %}
+  {% ci_created = nil %}
+  {% ci_updated = nil %}
+  {% if stamps %}
+    {% for c, i in cols %}
+      {% if c.args[0].id == "created_at" %}{% ci_created = i + 1 %}{% end %}
+      {% if c.args[0].id == "updated_at" %}{% ci_updated = i + 1 %}{% end %}
+    {% end %}
+  {% end %}
 
+  {% if expand_timestamps %}
+  # `cols :timestamps`: the model again with its two columns and the marker
+  # that turns the stamping on.
+  model {{name}} do
+    {% for e in exprs %}
+      {% unless e.is_a?(Call) && e.name == "cols" %}
+        {{e}}
+      {% end %}
+    {% end %}
+    col :created_at, :datetime
+    col :updated_at, :datetime
+    __timestamps
+  end
+  {% else %}
   @[OnTape]
   pub struct {{name.id}}
     getter session : ::Ricord::Sessions::Session
@@ -337,7 +377,9 @@ pub macro model(name, &block)
           v.is_a?(::Ricord::Values::TextSpan) ? store.span_text(v) : {% if nullable %}nil{% else %}""{% end %}
         end
 
+        # Setting the value a persisted record already holds is not a change.
         def {{cn}}=(value : String{% if nullable %} | Nil{% end %}) : Nil
+          return nil if persisted? && ::Ricord::Model.same_text?(store, store.slot(index, {{i + 1}}), value)
           {% if nullable %}
             if value.nil?
               store.set_slot(index, {{i + 1}}, nil)
@@ -355,6 +397,7 @@ pub macro model(name, &block)
 
         # Sets the JSON text; the caller writes valid JSON.
         def {{cn}}=(value : String{% if nullable %} | Nil{% end %}) : Nil
+          return nil if persisted? && ::Ricord::Model.same_text?(store, store.slot(index, {{i + 1}}), value)
           {% if nullable %}
             if value.nil?
               store.set_slot(index, {{i + 1}}, nil)
@@ -388,10 +431,12 @@ pub macro model(name, &block)
 
         def {{cn}}=(value : {{t.id}}{% if t == "Int64" %} | Int32{% end %}{% if nullable %} | Nil{% end %}) : Nil
           {% if t == "Int64" %}
-            store.set_slot(index, {{i + 1}}, value.is_a?(Int32) ? value.to_i64 : value)
+            given = value.is_a?(Int32) ? value.to_i64 : value
           {% else %}
-            store.set_slot(index, {{i + 1}}, value)
+            given = value
           {% end %}
+          return nil if persisted? && store.slot(index, {{i + 1}}) == given
+          store.set_slot(index, {{i + 1}}, given)
           nil
         end
       {% end %}
@@ -412,6 +457,66 @@ pub macro model(name, &block)
     def changed? : Bool
       COLUMNS.size.times { |col| return true if store.changed?(index, col) }
       false
+    end
+
+    # The names of the columns assigned since the last load or save.
+    def changed_attributes : Array(String)
+      names = [] of String
+      (1...COLUMNS.size).each { |col| names << COLUMNS[col] if store.changed?(index, col) }
+      names
+    end
+
+    {% for c, i in cols %}
+      def {{c.args[0].id}}_changed? : Bool
+        store.changed?(index, {{i + 1}})
+      end
+    {% end %}
+
+    {% for f in json_fields %}
+      {% unless f.args.size == 3 %}{% raise "model #{name}: json_field takes :column, :key, :type" %}{% end %}
+      {% jci = nil %}
+      {% for c, i in cols %}{% if c.args[0].id == f.args[0].id %}{% jci = i + 1 %}{% unless types[c.args[1].id.stringify] == "::Ricord::Json::Json" %}{% raise "model #{name}: json_field #{f.args[1]} names #{f.args[0]}, which is not a :json column" %}{% end %}{% end %}{% end %}
+      {% unless jci %}{% raise "model #{name}: json_field names unknown column #{f.args[0]}" %}{% end %}
+      {% jkind = f.args[2].id.stringify %}
+      {% jt = {"string" => "String", "integer" => "Int64", "boolean" => "Bool", "float" => "Float64"}[jkind] %}
+      {% unless jt %}{% raise "model #{name}: json_field #{f.args[1]} has unknown type #{f.args[2]}; use :string, :integer, :boolean or :float" %}{% end %}
+      {% jd = f.named_args && f.named_args.find { |na| na.name.stringify == "default" } %}
+      {% jdefault = jd ? jd.value : nil %}
+      {% jnil = jdefault.is_a?(NilLiteral) || jdefault == nil %}
+      {% jkey = f.args[1].id %}
+      # json_field: key {{jkey.stringify}} of {{f.args[0].id.stringify}}; the default for a
+      # missing key, the default and a warning for a value of another type.
+      def {{jkey}} : {{jt.id}}{% if jnil %} | Nil{% end %}
+        slot = store.slot(index, {{jci}})
+        span = slot.is_a?(::Ricord::Values::TextSpan) ? slot : ::Ricord::Values::TextSpan.new(0, 0)
+        value = ::Ricord::Json.read_{{jkind.id}}_field(store, span, {{jkey.stringify}})
+        if value.is_a?(::Ricord::Json::WrongType)
+          ::Ricord::Sessions::LOG.warn { "#{TABLE}.{{f.args[0].id}}: key {{jkey}} is not of type {{jkind.id}}; using the default" }
+          return {% if jnil %}nil{% elsif jt == "Int64" %}({{jdefault}}).to_i64{% elsif jt == "Float64" %}({{jdefault}}).to_f64{% else %}{{jdefault}}{% end %}
+        end
+        return value unless value.nil?
+        {% if jnil %}nil{% elsif jt == "Int64" %}({{jdefault}}).to_i64{% elsif jt == "Float64" %}({{jdefault}}).to_f64{% else %}{{jdefault}}{% end %}
+      end
+
+      # Rewrites the column's JSON text with the key set and marks the column changed.
+      def {{jkey}}=(value : {{jt.id}}{% if jt == "Int64" %} | Int32{% end %}{% if jt == "Float64" %} | Int32 | Int64{% end %}{% if jnil %} | Nil{% end %}) : Nil
+        {% if jt == "Int64" %}
+          given = value.is_a?(Int32) ? value.to_i64 : value
+        {% elsif jt == "Float64" %}
+          given = value.is_a?(Int32) || value.is_a?(Int64) ? value.to_f64 : value
+        {% else %}
+          given = value
+        {% end %}
+        ::Ricord::Json.set_field(store, index, {{jci}}, {{jkey.stringify}}, given)
+      end
+    {% end %}
+
+    # Assigns the given columns, then saves: the record, or the save's error.
+    def update(*, {% for c in cols %}{% t = types[c.args[1].id.stringify] %}{% nullable = c.named_args && c.named_args.any? { |na| na.name.stringify == "null" && na.value } %}{{c.args[0].id}} : {% if t == "::Ricord::Json::Json" %}String{% elsif t == "::Ricord::Blob::Blob" %}::Std::Slice::Bytes{% else %}{{t.id}}{% end %}{% if t == "Int64" %} | Int32{% end %}{% if nullable %} | Nil{% end %} | ::Ricord::Values::Skip = ::Ricord::Values::SKIP, {% end %}) : self | ::Ricord::Failures::Error
+      {% for c in cols %}
+        self.{{c.args[0].id}} = {{c.args[0].id}} unless {{c.args[0].id}}.is_a?(::Ricord::Values::Skip)
+      {% end %}
+      save
     end
 
     def to_param : String
@@ -521,6 +626,10 @@ pub macro model(name, &block)
           return ::Ricord::Failures::CallbackError.new(TABLE, "save", "before_update {{m.id}}") if refused.is_a?(::Ricord::Failures::Failure)
         {% end %}
       end
+      {% if stamps %}
+        stamped = stamp(creating)
+        return stamped if stamped.is_a?(::Ricord::Failures::Failure)
+      {% end %}
       written = write_row
       return written if written.is_a?(::Ricord::Failures::Failure)
       if creating
@@ -540,6 +649,27 @@ pub macro model(name, &block)
       {% end %}
       nil
     end
+
+    {% if stamps %}
+      # `cols :timestamps`: a create sets created_at and updated_at, an update
+      # that changes another column sets updated_at; a column the caller
+      # assigned is kept. The time is UTC as the dialect stores it
+      # (microseconds), so memory and the row agree.
+      def stamp(creating : Bool) : Nil | ::Ricord::Failures::DatabaseError
+        d = session.dialect
+        now = d.read_time(d.write_time(::Std::Time::Time.utc), TABLE, "save")
+        return now if now.is_a?(::Ricord::Failures::DatabaseError)
+        if creating
+          store.set_slot(index, {{ci_created}}, now) unless store.changed?(index, {{ci_created}})
+          store.set_slot(index, {{ci_updated}}, now) unless store.changed?(index, {{ci_updated}})
+        elsif !store.changed?(index, {{ci_updated}})
+          other = false
+          (1...COLUMNS.size).each { |col| other = true if col != {{ci_updated}} && store.changed?(index, col) }
+          store.set_slot(index, {{ci_updated}}, now) if other
+        end
+        nil
+      end
+    {% end %}
 
     # The INSERT or UPDATE itself; changed marks stay until the save succeeds.
     def write_row : Nil | ::Ricord::Failures::DatabaseError
@@ -853,4 +983,5 @@ pub macro model(name, &block)
       {{d}}
     {% end %}
   end
+  {% end %}
 end

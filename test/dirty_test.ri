@@ -1,0 +1,218 @@
+# M2: dirty tracking (`<col>_changed?`, `changed_attributes`, UPDATE of the
+# changed columns only), `cols :timestamps` and `update(**attrs)`.
+module test/dirty_test
+
+import std/time::{Time, Span}
+import db/db/spec::{describe, it}
+import ricord
+import ricord/model::{model}
+import ricord/failures::{DatabaseError, RecordInvalid}
+import test/spec_helper::*
+import test/models::*
+
+model Post do
+  table :posts
+  col :title, :string
+  col :views, :integer, null: true
+  col :body, :string, null: true
+  cols :timestamps
+  validates :title, presence: true
+end
+
+def stale : Time
+  Time.utc(2020, 1, 2, 3, 4, 5)
+end
+
+def with_posts(& : Ricord::Sessions::Session -> Nil) : Nil
+  with_db do |db|
+    Post.create_table(db).or_panic
+    yield db
+  end
+end
+
+# The UPDATE statements logged from *start* on.
+def updates_from(db : Ricord::Sessions::Session, start : Int32) : Array(String)
+  found = [] of String
+  db.statements.each_with_index { |s, i| found << s if i >= start && s.starts_with?("UPDATE") }
+  found
+end
+
+describe "dirty tracking" do
+  it "reports a changed column and its name" do
+    with_posts do |db|
+      post = Post.create(db, title: "Original", views: 1).or_panic
+      assert !post.changed?
+      assert !post.title_changed?
+      assert post.changed_attributes.empty?
+      post.title = "Updated"
+      assert post.title_changed?
+      assert !post.views_changed?
+      assert post.changed?
+      assert post.changed_attributes == ["title"]
+    end
+  end
+
+  it "lists every changed column in column order" do
+    with_posts do |db|
+      post = Post.create(db, title: "John").or_panic
+      post.body = "text"
+      post.title = "Jane"
+      assert post.changed_attributes == ["title", "body"]
+    end
+  end
+
+  it "does not count setting the value a saved record holds" do
+    with_posts do |db|
+      post = Post.create(db, title: "Same", views: 3).or_panic
+      post.title = "Same"
+      post.views = 3
+      post.body = nil
+      assert !post.changed?
+      loaded = Post[db].find(post.id).or_panic
+      loaded.title = "Same"
+      assert !loaded.title_changed?
+    end
+  end
+
+  it "clears the changes after a save and after a reload" do
+    with_posts do |db|
+      post = Post.create(db, title: "Original").or_panic
+      post.title = "Updated"
+      post.save.or_panic
+      assert !post.changed?
+      assert !post.title_changed?
+      post.title = "Again"
+      post.reload.or_panic
+      assert !post.title_changed?
+      assert post.title == "Updated"
+    end
+  end
+
+  it "keeps the changes when the save fails" do
+    with_posts do |db|
+      post = Post.create(db, title: "a").or_panic
+      post.title = ""
+      assert post.save.is_a?(RecordInvalid)
+      assert post.title_changed?
+    end
+  end
+
+  it "updates only the changed columns" do
+    with_posts do |db|
+      post = Post.create(db, title: "a", views: 1, body: "b").or_panic
+      start = db.statements.size
+      post.views = 2
+      post.save.or_panic
+      updates = updates_from(db, start)
+      assert updates.size == 1
+      assert updates[0].includes?("`views` = ?")
+      assert updates[0].includes?("`updated_at` = ?")
+      assert !updates[0].includes?("`title`")
+      assert !updates[0].includes?("`body`")
+      assert !updates[0].includes?("`created_at`")
+      assert Post[db].find(post.id).or_panic.views == 2_i64
+    end
+  end
+
+  it "sends no UPDATE and keeps updated_at when nothing changed" do
+    with_posts do |db|
+      post = Post.create(db, title: "a").or_panic
+      stamp = post.updated_at
+      start = db.statements.size
+      post.save.or_panic
+      post.title = "a"
+      post.save.or_panic
+      assert updates_from(db, start).empty?
+      assert post.updated_at == stamp
+      assert Post[db].find(post.id).or_panic.updated_at == stamp
+    end
+  end
+end
+
+describe "timestamps" do
+  it "sets created_at and updated_at on create, as stored" do
+    with_posts do |db|
+      before = Time.utc - Span.seconds(1)
+      post = Post.create(db, title: "p").or_panic
+      assert post.created_at > before
+      assert post.created_at == post.updated_at
+      stored = Post[db].find(post.id).or_panic
+      assert stored.created_at == post.created_at, "memory and the row agree (microseconds)"
+      assert stored.updated_at == post.updated_at
+      assert post.created_at.nanosecond % 1000 == 0
+    end
+  end
+
+  it "moves updated_at on an update that changes a column, not created_at" do
+    with_posts do |db|
+      post = Post.create(db, title: "n").or_panic
+      created = post.created_at
+      post.updated_at = stale
+      post.save.or_panic
+      assert Post[db].find(post.id).or_panic.updated_at == stale, "an assigned updated_at is kept"
+      post.title = "changed"
+      post.save.or_panic
+      assert post.updated_at > stale
+      stored = Post[db].find(post.id).or_panic
+      assert stored.updated_at == post.updated_at
+      assert stored.created_at == created
+    end
+  end
+
+  it "keeps assigned stamps with their microseconds" do
+    with_posts do |db|
+      stamp = Time.utc(2020, 1, 1) + Span.nanoseconds(123_456_000_i64)
+      post = Post.new(db, title: "fixed")
+      post.created_at = stamp
+      post.updated_at = stamp
+      post.save.or_panic
+      stored = Post[db].find(post.id).or_panic
+      assert stored.created_at == stamp
+      assert stored.updated_at == stamp
+      stored.title = "touched"
+      stored.save.or_panic
+      moved = Post[db].find(post.id).or_panic.updated_at
+      assert moved > stamp
+      assert moved.nanosecond % 1000 == 0
+    end
+  end
+end
+
+describe "update(**attrs)" do
+  it "assigns and saves, returning the record" do
+    with_posts do |db|
+      post = Post.create(db, title: "a", views: 1).or_panic
+      start = db.statements.size
+      result = post.update(title: "b", views: 2)
+      assert result.is_a?(Post)
+      assert !post.changed?
+      updates = updates_from(db, start)
+      assert updates.size == 1
+      assert updates[0].includes?("`title` = ?")
+      stored = Post[db].find(post.id).or_panic
+      assert stored.title == "b"
+      assert stored.views == 2_i64
+    end
+  end
+
+  it "returns the save's error and keeps the assignment" do
+    with_posts do |db|
+      post = Post.create(db, title: "a").or_panic
+      result = post.update(title: "")
+      assert result.is_a?(RecordInvalid)
+      assert post.title_changed?
+      assert Post[db].find(post.id).or_panic.title == "a"
+      court = Court.create(db, name: "x").or_panic
+      Court.create(db, name: "y").or_panic
+      assert court.update(name: "y").is_a?(DatabaseError)
+    end
+  end
+
+  it "sets a nullable column to nil" do
+    with_posts do |db|
+      post = Post.create(db, title: "a", views: 4).or_panic
+      post.update(views: nil).or_panic
+      assert Post[db].find(post.id).or_panic.views.nil?
+    end
+  end
+end
