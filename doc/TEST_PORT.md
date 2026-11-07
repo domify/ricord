@@ -45,15 +45,15 @@ completed: M1
 | test/grant_attributes_store_accessor_test.ri | port | test/json_field_test.ri | M2 |  | |
 | test/grant_attributes_w6_alias_query_test.ri | defer |  |  | attribute API extras are not in v1 | |
 | test/grant_boolean_predicates_test.ri | drop |  |  | schema tenants and replica lag tracking removed | |
-| test/grant_callbacks_abort_test.ri | port | test/callback_test.ri | M2 |  | |
+| test/grant_callbacks_abort_test.ri | port | test/callback_test.ri | M2 | a refusal at each create, update and destroy stage runs no later callback, returns CallbackError naming the callback, leaves no row (or the old row) and keeps new_record? and the unsaved changes; a refused save inside a write rolls back only its savepoint; after_rollback is M2 part B; an after_destroy refusal rolls the DELETE back (Grant kept it deleted); the refusal is the returned CallbackError, not an errors entry | x |
 | test/grant_callbacks_after_commit_timing_test.ri | port | test/after_commit_test.ri | M2 |  | |
 | test/grant_callbacks_after_save_commit_test.ri | port | test/after_commit_test.ri | M2 |  | |
 | test/grant_callbacks_around_callbacks_test.ri | drop |  |  | around/prepend/proc callbacks are not in v1 | |
 | test/grant_callbacks_around_validation_test.ri | drop |  |  | around/prepend/proc callbacks are not in v1 | |
-| test/grant_callbacks_callbacks_test.ri | port | test/callback_test.ri | M2 |  | |
+| test/grant_callbacks_callbacks_test.ri | port | test/callback_test.ri | M2 | create, update and destroy callback order, a callback's error is returned (not swallowed), a before_create callback fills a column before the INSERT; the after_commit forms are M2 part B; after_initialize, after_find and after_touch are not in doc/DESIGN.md; calling a callback by hand is not in Ricord (callbacks are named methods) | x |
 | test/grant_callbacks_commit_dedup_savepoint_test.ri | port | test/after_commit_test.ri | M2 |  | |
 | test/grant_callbacks_commit_on_option_test.ri | port | test/after_commit_test.ri | M2 |  | |
-| test/grant_callbacks_lifecycle_callbacks_test.ri | port | test/callback_test.ri | M2 |  | |
+| test/grant_callbacks_lifecycle_callbacks_test.ri | port | test/callback_test.ri | M2 | valid? runs before_validation then after_validation, create/update/destroy order; block-form callbacks become method names; after_commit and after_rollback are M2 part B; after_initialize, after_find and after_touch are not in doc/DESIGN.md | x |
 | test/grant_callbacks_prepend_test.ri | drop |  |  | around/prepend/proc callbacks are not in v1 | |
 | test/grant_callbacks_proc_conditions_test.ri | drop |  |  | around/prepend/proc callbacks are not in v1 | |
 | test/grant_callbacks_run_callbacks_test.ri | drop |  |  | around/prepend/proc callbacks are not in v1 | |
@@ -137,17 +137,17 @@ completed: M1
 | test/grant_encryption_w6b_lazy_decrypt_serialization_test.ri | defer |  |  | encryption is in Future Improvements | |
 | test/grant_encryption_w6b_lazy_decrypt_test.ri | defer |  |  | encryption is in Future Improvements | |
 | test/grant_enum_attributes_test.ri | defer |  |  | enums are in Future Improvements | |
-| test/grant_error_error_test.ri | port | test/validation_test.ri | M2 | validation error entries are M2 | |
+| test/grant_error_error_test.ri | drop |  |  | its one case is an error entry's to_json; an ErrorEntry is store data with no JSON form, rendering errors is the application's | |
 | test/grant_errors_constraint_translation_classification_test.ri | defer |  |  | Ricord does not classify database errors into kinds; DatabaseError carries the driver code only | |
 | test/grant_errors_constraint_translation_contention_test.ri | defer |  |  | pools dropped; lock-wait classification not built (a busy database is a plain DatabaseError) | |
 | test/grant_errors_constraint_translation_pg_test.ri | drop |  |  | PostgreSQL or MySQL only | |
 | test/grant_errors_constraint_translation_test.ri | drop |  |  | PostgreSQL or MySQL error translation and pool errors | |
 | test/grant_errors_constraint_translation_writes_test.ri | port | test/errors_test.ri | M1 | unique, foreign key and NOT NULL failures as DatabaseError, write rollback, record stays new; no kinds such as RecordNotUnique, no sql/binds fields; code checked on SQLite only (Turso errors carry -1) | x |
-| test/grant_errors_errors_api_test.ri | port | test/validation_test.ri | M2 | record.errors and validations are M2 | |
+| test/grant_errors_errors_api_test.ri | port | test/validation_test.ri | M2 | add (also on :base), on, full_messages (base alone), empty?, any?, size, entries per record, a validation filling errors; where, of_type, include?, attribute_names, group_by_attribute, to_hash, merge, clear, first/last, each/map/select, to_json, to_s and typed entries are not in the Errors view doc/DESIGN.md lists | x |
 | test/grant_errors_statement_invalid_test.ri | drop |  |  | DatabaseError has no sql or binds fields by design (text extras live in the message); binds kept out of the message is covered in test/errors_test.ri | |
 | test/grant_errors_taxonomy_test.ri | port | test/errors_test.ri | M1 | every error is a Failure, message format, RecordInvalid joining, 240-byte cut; class hierarchy and historical aliases dropped (flat structs); save!/create! raising RecordInvalid is M2 | x |
-| test/grant_exceptions_record_invalid_test.ri | port | test/validation_test.ri | M2 | RecordNotSaved with the record's validation messages needs validations (M2) | |
-| test/grant_exceptions_record_not_destroyed_test.ri | port | test/callback_test.ri | M2 | a destroy halted by a callback (CallbackError) needs callbacks (M2) | |
+| test/grant_exceptions_record_invalid_test.ri | port | test/validation_test.ri | M2 | an invalid save returns RecordInvalid whose message holds the first full message and count; the error holds no record (flat struct) | x |
+| test/grant_exceptions_record_not_destroyed_test.ri | port | test/callback_test.ri | M2 | a destroy refused by before_destroy returns CallbackError naming the callback and keeps the row; the error holds no record (flat struct) | x |
 | test/grant_fiber_connection_context_test.ri | drop |  |  | driver prepares each statement; no fibers in ris | |
 | test/grant_integrators_find_or_test.ri | defer |  |  | attribute API extras are not in v1 | |
 | test/grant_locking_lock_clause_test.ri | defer |  |  | locking is not in v1 (SQLite writes are serialized) | |
@@ -316,28 +316,28 @@ completed: M1
 | test/grant_transactions_timestamp_precision_test.ri | port | test/dirty_test.ri | M2 |  | |
 | test/grant_transactions_touch_test.ri | port | test/dirty_test.ri | M2 |  | |
 | test/grant_transactions_update_test.ri | port | test/write_test.ri | M1 | a setter and save update a row, nil saved into a nullable column; update(**attrs), validations and timestamps are M2 | x |
-| test/grant_validation_helpers_blank_test.ri | port | test/validation_test.ri | M2 |  | |
-| test/grant_validation_helpers_choice_test.ri | port | test/validation_test.ri | M2 |  | |
-| test/grant_validation_helpers_exclusion_test.ri | port | test/validation_test.ri | M2 |  | |
-| test/grant_validation_helpers_inequality_test.ri | port | test/validation_test.ri | M2 |  | |
-| test/grant_validation_helpers_lenght_test.ri | port | test/validation_test.ri | M2 |  | |
-| test/grant_validation_helpers_nil_test.ri | port | test/validation_test.ri | M2 |  | |
-| test/grant_validation_helpers_uniqueness_test.ri | port | test/validation_test.ri | M2 |  | |
-| test/grant_validations_condition_arrays_test.ri | port | test/validation_test.ri | M2 |  | |
-| test/grant_validations_error_object_test.ri | port | test/validation_test.ri | M2 |  | |
-| test/grant_validations_errors_api_test.ri | port | test/validation_test.ri | M2 |  | |
-| test/grant_validations_errors_details_options_test.ri | port | test/validation_test.ri | M2 |  | |
-| test/grant_validations_multi_attribute_test.ri | port | test/validation_test.ri | M2 |  | |
-| test/grant_validations_presence_blank_test.ri | port | test/validation_test.ri | M2 |  | |
-| test/grant_validations_validate_bang_test.ri | port | test/validation_test.ri | M2 |  | |
-| test/grant_validations_validator_info_evaluation_test.ri | port | test/validation_test.ri | M2 |  | |
-| test/grant_validations_validator_test.ri | port | test/validation_test.ri | M2 |  | |
-| test/grant_validations_w6_presence_message_test.ri | port | test/validation_test.ri | M2 |  | |
-| test/grant_validators_built_in_test.ri | port | test/validation_test.ri | M2 |  | |
-| test/grant_validators_contexts_test.ri | port | test/validation_test.ri | M2 |  | |
-| test/grant_validators_parity_test.ri | port | test/validation_test.ri | M2 |  | |
-| test/grant_validators_presence_test.ri | port | test/validation_test.ri | M2 |  | |
-| test/grant_validators_uniqueness_test.ri | port | test/validation_test.ri | M2 |  | |
+| test/grant_validation_helpers_blank_test.ri | port | test/validation_test.ri | M2 | not-blank as presence: empty and whitespace-only text fail; is_blank (absence) and Grant's "must not be blank" wording are not in doc/DESIGN.md (Rails message "can't be blank") | x |
+| test/grant_validation_helpers_choice_test.ri | port | test/validation_test.ri | M2 | inclusion over a String list and an integer list; the message is Rails' "is not included in the list", not Grant's choice list; Symbol choices are not in Ricord | x |
+| test/grant_validation_helpers_exclusion_test.ri | defer |  |  | needs an exclusion validator, not in doc/DESIGN.md | |
+| test/grant_validation_helpers_inequality_test.ri | defer |  |  | needs a numericality (less/greater than) validator, not in doc/DESIGN.md | |
+| test/grant_validation_helpers_lenght_test.ri | port | test/validation_test.ri | M2 | minimum and maximum with Rails messages, both boundaries allowed; Grant's wording and its nil panic are not kept (nil counts as "") | x |
+| test/grant_validation_helpers_nil_test.ri | port | test/validation_test.ri | M2 | not-nil as presence on integer and boolean columns (nil fails, zero present, false blank as in Rails); is_nil and Grant's wording are not in doc/DESIGN.md | x |
+| test/grant_validation_helpers_uniqueness_test.ri | defer |  |  | needs a uniqueness validator, not in doc/DESIGN.md (a unique index refuses with DatabaseError, tested in crud_test) | |
+| test/grant_validations_condition_arrays_test.ri | defer |  |  | needs if:/unless: conditions on validations and callbacks, not in doc/DESIGN.md | |
+| test/grant_validations_error_object_test.ri | port | test/validation_test.ri | M2 | humanized full messages ("First name", an _id suffix dropped, :base alone); typed entries, options, match?, copy and i18n names are not in doc/DESIGN.md | x |
+| test/grant_validations_errors_api_test.ri | defer |  |  | needs typed error entries with options (of_type, where, added?, delete, details, as_json, merge, import), not in doc/DESIGN.md; the plain full message is covered by grant_validations_error_object | |
+| test/grant_validations_errors_details_options_test.ri | defer |  |  | needs errors.details (typed entries with count/value options), not in doc/DESIGN.md | |
+| test/grant_validations_multi_attribute_test.ri | port | test/validation_test.ri | M2 | one validates line over several columns (presence, length); numericality, exclusion, absence, comparison, confirmation, acceptance, email, url and allow_nil are not in doc/DESIGN.md | x |
+| test/grant_validations_presence_blank_test.ri | port | test/validation_test.ri | M2 | nil, false and whitespace-only text are blank, zero present; collection-typed properties are not Ricord columns; allow_blank and on: contexts are not in doc/DESIGN.md | x |
+| test/grant_validations_validate_bang_test.ri | port | test/validation_test.ri | M2 | an invalid save returns RecordInvalid with the full message and the entries stay on the record (Ricord has no validate! — save returns the error); on: contexts are not in doc/DESIGN.md | x |
+| test/grant_validations_validator_info_evaluation_test.ri | defer |  |  | needs validator reflection (validators_on), not in doc/DESIGN.md | |
+| test/grant_validations_validator_test.ri | port | test/validation_test.ri | M2 | a custom check on one column and a record-level check, a fixed record validates again; the proc and block forms become validate :method | x |
+| test/grant_validations_w6_presence_message_test.ri | defer |  |  | needs message: options (String, Symbol key, Proc), i18n, allow_blank, if: and on:, not in doc/DESIGN.md; an invalid save writing nothing is covered by validation_test | |
+| test/grant_validators_built_in_test.ri | port | test/validation_test.ri | M2 | length minimum/maximum/is, format with:, inclusion, every validator's entry collected; numericality, format without:, email, url, length in:, confirmation, acceptance, exclusion, validates_associated, message: and if: are not in doc/DESIGN.md | x |
+| test/grant_validators_contexts_test.ri | defer |  |  | needs on: validation contexts, not in doc/DESIGN.md | |
+| test/grant_validators_parity_test.ri | port | test/validation_test.ri | M2 | validate :method adding an entry or none; validates_with, validates_each, comparison, absence, invalid?, details, on: and if:/unless: are not in doc/DESIGN.md | x |
+| test/grant_validators_presence_test.ri | port | test/validation_test.ri | M2 | nil, empty and whitespace text fail with "can't be blank", nil on a non-text column fails, every failure collected; message: and if:/unless: are not in doc/DESIGN.md | x |
+| test/grant_validators_uniqueness_test.ri | defer |  |  | needs a uniqueness validator (with scope and case_sensitive), not in doc/DESIGN.md | |
 | test/hash_equality.ri | drop |  |  | support file, not a test | |
 | test/integration_mixed_adapter_test.ri | drop |  |  | adapter and config layer replaced by Ricord.open and the URI scheme | |
 | test/ivar_initializer_save_probe.ri | drop |  |  | support file, not a test | |

@@ -194,6 +194,9 @@ pub macro model(name, &block)
   {% defs = [] of ASTNode %}
   {% indexes = [] of ASTNode %}
   {% checks = [] of ASTNode %}
+  {% validations = [] of ASTNode %}
+  {% custom_validations = [] of ASTNode %}
+  {% callbacks = {"before_validation" => [] of ASTNode, "after_validation" => [] of ASTNode, "before_save" => [] of ASTNode, "after_save" => [] of ASTNode, "before_create" => [] of ASTNode, "after_create" => [] of ASTNode, "before_update" => [] of ASTNode, "after_update" => [] of ASTNode, "before_destroy" => [] of ASTNode, "after_destroy" => [] of ASTNode} %}
   {% for e in exprs %}
     {% if e.is_a?(Call) && e.name == "table" %}
       {% arg = e.args[0] %}
@@ -204,6 +207,12 @@ pub macro model(name, &block)
       {% indexes << e %}
     {% elsif e.is_a?(Call) && e.name == "check_constraint" %}
       {% checks << e %}
+    {% elsif e.is_a?(Call) && e.name == "validates" %}
+      {% validations << e %}
+    {% elsif e.is_a?(Call) && e.name == "validate" %}
+      {% custom_validations << e.args[0] %}
+    {% elsif e.is_a?(Call) && callbacks[e.name.stringify] %}
+      {% for a in e.args %}{% callbacks[e.name.stringify] << a %}{% end %}
     {% elsif e.is_a?(Def) %}
       {% defs << e %}
     {% elsif e.stringify.starts_with?("__") || e.stringify.starts_with?("::__") || e.is_a?(Nop) || e.is_a?(BoolLiteral) %}
@@ -409,16 +418,131 @@ pub macro model(name, &block)
       id.to_s
     end
 
-    # INSERT or UPDATE of the changed columns, in its own write unless inside one.
+    # This record's validation entries.
+    def errors : ::Ricord::Errors::Errors
+      ::Ricord::Errors::Errors.new(store, index, COLUMNS)
+    end
+
+    # Runs the validation callbacks and validators; a refusing callback is a
+    # `CallbackError` (entries added so far stay).
+    def run_validations : Nil | ::Ricord::Failures::CallbackError
+      ::Ricord::Validations.clear(store, index)
+      {% for m in callbacks["before_validation"] %}
+        refused = {{m.id}}
+        return ::Ricord::Failures::CallbackError.new(TABLE, "validate", "before_validation {{m.id}}") if refused.is_a?(::Ricord::Failures::Failure)
+      {% end %}
+      {% for v in validations %}
+        {% for attr in v.args %}
+          {% ci = nil %}
+          {% for c, i in cols %}{% if c.args[0].id == attr.id %}{% ci = i + 1 %}{% end %}{% end %}
+          {% unless ci %}{% raise "model #{name}: validates names unknown column #{attr}" %}{% end %}
+          {% for na in v.named_args %}
+            {% kind = na.name.stringify %}
+            {% if kind == "presence" %}
+              {% if na.value %}::Ricord::Validations.presence(store, index, {{ci}}){% end %}
+            {% elsif kind == "length" %}
+              {% lo = {} of String => ASTNode %}
+              {% for k, val in na.value %}{% lo[k.id.stringify] = val %}{% end %}
+              {% for k, val in lo %}{% unless ["minimum", "maximum", "is"].includes?(k) %}{% raise "model #{name}: unknown length option #{k}" %}{% end %}{% end %}
+              ::Ricord::Validations.length(store, index, {{ci}}, {{lo["minimum"] || nil}}, {{lo["maximum"] || nil}}, {{lo["is"] || nil}})
+            {% elsif kind == "format" %}
+              {% fo = {} of String => ASTNode %}
+              {% for k, val in na.value %}{% fo[k.id.stringify] = val %}{% end %}
+              {% pattern = fo["with"] %}
+              {% unless pattern.is_a?(RegexLiteral) %}{% raise "model #{name}: format with: takes a regex literal" %}{% end %}
+              {% unless pattern.options.empty? %}{% raise "model #{name}: format with: takes no regex options; write them inline, as (?i)" %}{% end %}
+              # The regex goes in as its source: a regex literal in the generated code
+              # crashes the ris compiler.
+              ::Ricord::Validations.format(store, index, {{ci}}, {{pattern.source}})
+            {% elsif kind == "inclusion" %}
+              {% io = {} of String => ASTNode %}
+              {% for k, val in na.value %}{% io[k.id.stringify] = val %}{% end %}
+              included{{ci}} = false
+              current{{ci}} = {{attr.id}}
+              {{io["in"]}}.each { |allowed| included{{ci}} = true if allowed == current{{ci}} }
+              ::Ricord::Validations.inclusion(store, index, {{ci}}, included{{ci}})
+            {% else %}
+              {% raise "model #{name}: unknown validation #{na.name}" %}
+            {% end %}
+          {% end %}
+        {% end %}
+      {% end %}
+      {% for m in custom_validations %}
+        {{m.id}}
+      {% end %}
+      {% for m in callbacks["after_validation"] %}
+        refused = {{m.id}}
+        return ::Ricord::Failures::CallbackError.new(TABLE, "validate", "after_validation {{m.id}}") if refused.is_a?(::Ricord::Failures::Failure)
+      {% end %}
+      nil
+    end
+
+    # Validates; false when a validator added an entry or a callback refused.
+    def valid? : Bool
+      run_validations.nil? && errors.empty?
+    end
+
+    # Validates, then INSERT or UPDATE of the changed columns with the save
+    # callbacks, in its own write unless inside one (then a savepoint).
     def save : self | ::Ricord::Failures::Error
       return ::Ricord::Failures::DatabaseError.new(TABLE, "save", "record #{id} is destroyed") if destroyed?
+      refused = run_validations
+      return refused if refused.is_a?(::Ricord::Failures::Failure)
+      count = errors.size
+      return ::Ricord::Failures::RecordInvalid.new(TABLE, ::Ricord::Validations.first_full_message(store, index, COLUMNS), count) if count > 0
+      was_new = new_record?
       record = self
       result = session.write { |tx| record.save_in(tx) }
-      return result if result.is_a?(::Ricord::Failures::Failure)
+      if result.is_a?(::Ricord::Failures::Failure)
+        if was_new
+          store.set_flag(index, ::Ricord::Storage::FLAG_PERSISTED, false)
+          store.load_slot(index, 0, nil)
+        end
+        return result
+      end
+      store.clear_changed(index, COLUMNS.size)
       self
     end
 
-    def save_in(tx : ::Ricord::Sessions::Tx) : Nil | ::Ricord::Failures::DatabaseError
+    def save_in(tx : ::Ricord::Sessions::Tx) : Nil | ::Ricord::Failures::DatabaseError | ::Ricord::Failures::CallbackError
+      {% for m in callbacks["before_save"] %}
+        refused = {{m.id}}
+        return ::Ricord::Failures::CallbackError.new(TABLE, "save", "before_save {{m.id}}") if refused.is_a?(::Ricord::Failures::Failure)
+      {% end %}
+      creating = new_record?
+      if creating
+        {% for m in callbacks["before_create"] %}
+          refused = {{m.id}}
+          return ::Ricord::Failures::CallbackError.new(TABLE, "save", "before_create {{m.id}}") if refused.is_a?(::Ricord::Failures::Failure)
+        {% end %}
+      else
+        {% for m in callbacks["before_update"] %}
+          refused = {{m.id}}
+          return ::Ricord::Failures::CallbackError.new(TABLE, "save", "before_update {{m.id}}") if refused.is_a?(::Ricord::Failures::Failure)
+        {% end %}
+      end
+      written = write_row
+      return written if written.is_a?(::Ricord::Failures::Failure)
+      if creating
+        {% for m in callbacks["after_create"] %}
+          refused = {{m.id}}
+          return ::Ricord::Failures::CallbackError.new(TABLE, "save", "after_create {{m.id}}") if refused.is_a?(::Ricord::Failures::Failure)
+        {% end %}
+      else
+        {% for m in callbacks["after_update"] %}
+          refused = {{m.id}}
+          return ::Ricord::Failures::CallbackError.new(TABLE, "save", "after_update {{m.id}}") if refused.is_a?(::Ricord::Failures::Failure)
+        {% end %}
+      end
+      {% for m in callbacks["after_save"] %}
+        refused = {{m.id}}
+        return ::Ricord::Failures::CallbackError.new(TABLE, "save", "after_save {{m.id}}") if refused.is_a?(::Ricord::Failures::Failure)
+      {% end %}
+      nil
+    end
+
+    # The INSERT or UPDATE itself; changed marks stay until the save succeeds.
+    def write_row : Nil | ::Ricord::Failures::DatabaseError
       d = session.dialect
       sql = String::Builder.new
       args = [] of ::Db::Value::DBValue
@@ -460,17 +584,30 @@ pub macro model(name, &block)
           session.run(sql.to_s, args)!
         end
       end
-      store.clear_changed(index, COLUMNS.size)
       nil
     end
 
+    # DELETE with the destroy callbacks, in its own write unless inside one.
     def destroy : self | ::Ricord::Failures::Error
       return ::Ricord::Failures::DatabaseError.new(TABLE, "destroy", "record #{id} is destroyed") if destroyed?
       record = self
-      result = session.write { |tx| tx.exec("DELETE FROM `#{TABLE}` WHERE `id` = ?", [record.id.as(::Db::Value::DBValue)]) }
+      result = session.write { |tx| record.destroy_in(tx) }
       return result if result.is_a?(::Ricord::Failures::Failure)
       store.set_flag(index, ::Ricord::Storage::FLAG_DESTROYED, true)
       self
+    end
+
+    def destroy_in(tx : ::Ricord::Sessions::Tx) : Nil | ::Ricord::Failures::DatabaseError | ::Ricord::Failures::CallbackError
+      {% for m in callbacks["before_destroy"] %}
+        refused = {{m.id}}
+        return ::Ricord::Failures::CallbackError.new(TABLE, "destroy", "before_destroy {{m.id}}") if refused.is_a?(::Ricord::Failures::Failure)
+      {% end %}
+      tx.exec("DELETE FROM `#{TABLE}` WHERE `id` = ?", [id.as(::Db::Value::DBValue)])!
+      {% for m in callbacks["after_destroy"] %}
+        refused = {{m.id}}
+        return ::Ricord::Failures::CallbackError.new(TABLE, "destroy", "after_destroy {{m.id}}") if refused.is_a?(::Ricord::Failures::Failure)
+      {% end %}
+      nil
     end
 
     def reload : self | ::Ricord::Failures::Error

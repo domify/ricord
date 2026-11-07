@@ -1,0 +1,71 @@
+# `record.errors`: a view of one record's validation entries, which live in the
+# store's `errors` array as `ErrorEntry`s (doc/DESIGN.md, M2 item 1). Column -1
+# is the record as a whole (`:base`).
+module ricord/errors
+
+import ricord/storage::{Store, ErrorEntry}
+
+# "first_name" -> "First name"; a trailing "_id" is dropped ("author_id" ->
+# "Author"), as ActiveRecord's `humanize` does.
+pub def humanize(name : String) : String
+  base = name.ends_with?("_id") && name.bytesize > 3 ? name[0, name.bytesize - 3] : name
+  text = base.gsub('_', ' ')
+  text.empty? ? text : text[0, 1].upcase + text[1, text.bytesize - 1]
+end
+
+@[OnTape]
+pub struct Errors
+  getter store : Store
+  getter index : Int32
+  getter columns : Array(String)
+
+  def initialize(@store : Store, @index : Int32, @columns : Array(String))
+  end
+
+  # Adds *message* on *column* (`:base` for the record as a whole).
+  def add(column : Symbol, message : String) : Nil
+    name = column.to_s
+    col = -1
+    @columns.each_with_index { |c, i| col = i if c == name }
+    @store.errors << ErrorEntry.new(@index, col, @store.add_text(message))
+    nil
+  end
+
+  def size : Int32
+    count = 0
+    @store.errors.each { |e| count += 1 if e.record == @index }
+    count
+  end
+
+  def empty? : Bool
+    size == 0
+  end
+
+  def any? : Bool
+    !empty?
+  end
+
+  # The messages on *column*, in the order they were added.
+  def on(column : Symbol) : Array(String)
+    name = column.to_s
+    messages = [] of String
+    @store.errors.each do |e|
+      next unless e.record == @index
+      matches = e.column < 0 ? name == "base" : @columns[e.column] == name
+      messages << @store.span_text(e.message) if matches
+    end
+    messages
+  end
+
+  # Every message prefixed with its humanized column; `:base` messages alone.
+  def full_messages : Array(String)
+    messages = [] of String
+    @store.errors.each do |e|
+      next unless e.record == @index
+      text = @store.span_text(e.message)
+      # The joined text goes into the store, which outlives this call.
+      messages << (e.column < 0 ? text : @store.view_text("#{::Ricord::Errors.humanize(@columns[e.column])} #{text}"))
+    end
+    messages
+  end
+end

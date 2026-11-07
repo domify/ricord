@@ -1,0 +1,85 @@
+# The built-in validators: each reads one slot of a record and adds an
+# `ErrorEntry` with the ActiveRecord message when it fails (doc/DESIGN.md, M2
+# items 1 and 3). The model macro generates the calls.
+module ricord/validations
+
+import std/regex::{Regex}
+import ricord/values::{TextSpan}
+import ricord/storage::{Store, ErrorEntry}
+import ricord/errors
+
+pub def add(store : Store, index : Int32, col : Int32, message : String) : Nil
+  store.errors << ErrorEntry.new(index, col, store.add_text(message))
+  nil
+end
+
+# Drops the record's entries (a new validation run starts empty).
+pub def clear(store : Store, index : Int32) : Nil
+  kept = 0
+  store.errors.size.times do |i|
+    entry = store.errors[i]
+    next if entry.record == index
+    store.errors[kept] = entry
+    kept += 1
+  end
+  while store.errors.size > kept
+    store.errors.pop
+  end
+  nil
+end
+
+# nil, false and whitespace-only text are blank; anything else is present.
+pub def presence(store : Store, index : Int32, col : Int32) : Nil
+  value = store.slot(index, col)
+  blank = case value
+          when Nil      then true
+          when Bool     then !value
+          when TextSpan then store.span_text(value).strip.empty?
+          else               false
+          end
+  add(store, index, col, "can't be blank") if blank
+  nil
+end
+
+# Length in characters; nil counts as "".
+pub def length(store : Store, index : Int32, col : Int32, minimum : Int32 | Nil, maximum : Int32 | Nil, is : Int32 | Nil) : Nil
+  text = store.text(index, col)
+  size = 0
+  text.bytesize.times { |i| size += 1 if (text.byte_at(i) & 0xC0_u8) != 0x80_u8 }
+  if is && size != is
+    add(store, index, col, "is the wrong length (should be #{is} characters)")
+  end
+  if minimum && size < minimum
+    add(store, index, col, "is too short (minimum is #{minimum} characters)")
+  end
+  if maximum && size > maximum
+    add(store, index, col, "is too long (maximum is #{maximum} characters)")
+  end
+  nil
+end
+
+# The text must match *pattern* (`format: {with:}`); nil is checked as "".
+pub def format(store : Store, index : Int32, col : Int32, source : String) : Nil
+  add(store, index, col, "is invalid") unless Regex.new(source).match?(store.text(index, col))
+  nil
+end
+
+pub def inclusion(store : Store, index : Int32, col : Int32, included : Bool) : Nil
+  add(store, index, col, "is not included in the list") unless included
+  nil
+end
+
+# The record's first full message and entry count, for `RecordInvalid`.
+pub def first_full_message(store : Store, index : Int32, columns : Array(String)) : String
+  at = 0
+  while at < store.errors.size && store.errors[at].record != index
+    at += 1
+  end
+  message = ""
+  if at < store.errors.size
+    e = store.errors[at]
+    message << ::Ricord::Errors.humanize(columns[e.column]) << ' ' if e.column >= 0
+    message << store.span_text(e.message)
+  end
+  message
+end

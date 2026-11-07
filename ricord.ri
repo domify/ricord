@@ -9,6 +9,8 @@ pub import ricord/dialects
 pub import ricord/sessions
 pub import ricord/json
 pub import ricord/blob
+pub import ricord/errors
+pub import ricord/validations
 
 import db/db/db
 import db/db/errors::{DBError}

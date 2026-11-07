@@ -1,0 +1,282 @@
+# M2: validates (presence, length, format, inclusion), validate :method, the
+# errors view and RecordInvalid from save and create.
+module test/validation_test
+
+import db/db/spec::{describe, it}
+import ricord
+import ricord/model::{model}
+import ricord/failures::{RecordInvalid, Failure}
+import ricord/errors::{humanize}
+import test/spec_helper::*
+import test/models::*
+
+model Post do
+  table :posts
+  col :title, :string, null: true
+  col :body, :string, null: true
+  col :code, :string, null: true
+  col :slug, :string, null: true
+  col :plan, :string, null: true
+  col :rank, :integer, null: true
+  validates :title, presence: true
+  validates :body, length: {minimum: 3, maximum: 10}
+  validates :code, length: {is: 4}
+  validates :slug, format: {with: /\A[a-z]+\z/}
+  validates :plan, inclusion: {in: ["free", "pro"]}
+  validates :rank, inclusion: {in: [1_i64, 2_i64, 3_i64]}
+  validate :not_reserved
+
+  def not_reserved : Nil
+    errors.add(:title, "is reserved") if title == "root"
+    nil
+  end
+end
+
+model Person do
+  table :people
+  col :first_name, :string, null: true
+  col :last_name, :string, null: true
+  col :age, :integer, null: true
+  col :member, :boolean, null: true
+  col :author_id, :integer, null: true
+  validates :first_name, :last_name, presence: true, length: {maximum: 5}
+  validates :age, :member, presence: true
+end
+
+# The custom validator from Grant's validator test: two columns must match.
+model Signup do
+  table :signups
+  col :password, :string, null: true
+  col :password_check, :string, null: true
+  validate :passwords_match
+
+  def passwords_match : Nil
+    errors.add(:base, "password and validation should match") unless password == password_check
+    nil
+  end
+end
+
+def good_post(db : Ricord::Sessions::Db) : Post
+  Post.new(db, title: "Hi", body: "abcd", code: "abcd", slug: "abc", plan: "free", rank: 1)
+end
+
+def good_person(db : Ricord::Sessions::Db) : Person
+  Person.new(db, first_name: "Ada", last_name: "Byron", age: 36, member: true)
+end
+
+def with_tables(& : Ricord::Sessions::Session -> Nil) : Nil
+  with_db do |db|
+    Post.create_table(db).or_panic
+    Person.create_table(db).or_panic
+    Signup.create_table(db).or_panic
+    yield db
+  end
+end
+
+describe "validations" do
+  it "accepts a valid record" do
+    with_tables do |db|
+      post = good_post(db)
+      assert post.valid?
+      assert post.errors.empty?
+      assert post.errors.size == 0
+    end
+  end
+
+  it "gives each validator's message" do
+    with_tables do |db|
+      post = good_post(db)
+      post.title = "  "
+      assert !post.valid?
+      assert post.errors.on(:title) == ["can't be blank"]
+
+      post = good_post(db)
+      post.body = "ab"
+      assert !post.valid?
+      assert post.errors.on(:body) == ["is too short (minimum is 3 characters)"]
+      post.body = "abcdefghijk"
+      assert !post.valid?
+      assert post.errors.on(:body) == ["is too long (maximum is 10 characters)"]
+      post.body = "abc"
+      assert post.valid?, "the minimum is allowed"
+      post.body = "abcdefghij"
+      assert post.valid?, "the maximum is allowed"
+
+      post = good_post(db)
+      post.code = "abc"
+      assert !post.valid?
+      assert post.errors.on(:code) == ["is the wrong length (should be 4 characters)"]
+
+      post = good_post(db)
+      post.slug = "Abc1"
+      assert !post.valid?
+      assert post.errors.on(:slug) == ["is invalid"]
+
+      post = good_post(db)
+      post.plan = "gold"
+      assert !post.valid?
+      assert post.errors.on(:plan) == ["is not included in the list"]
+
+      post = good_post(db)
+      post.rank = 4
+      assert !post.valid?
+      assert post.errors.on(:rank) == ["is not included in the list"]
+    end
+  end
+
+  it "counts characters, not bytes, for length" do
+    with_tables do |db|
+      post = good_post(db)
+      post.code = "äöüõ"
+      assert post.valid?
+    end
+  end
+
+  it "treats nil as blank, empty and unmatched" do
+    with_tables do |db|
+      post = Post.new(db)
+      assert !post.valid?
+      assert post.errors.on(:title) == ["can't be blank"]
+      assert post.errors.on(:body) == ["is too short (minimum is 3 characters)"]
+      assert post.errors.on(:code) == ["is the wrong length (should be 4 characters)"]
+      assert post.errors.on(:slug) == ["is invalid"]
+      assert post.errors.on(:plan) == ["is not included in the list"]
+      assert post.errors.size == 6
+    end
+  end
+
+  it "runs a validate method that adds an entry" do
+    with_tables do |db|
+      post = good_post(db)
+      post.title = "root"
+      assert !post.valid?
+      assert post.errors.on(:title) == ["is reserved"]
+      assert post.errors.full_messages == ["Title is reserved"]
+      post.title = "Hi"
+      assert post.valid?, "a record that is fixed validates again"
+      assert post.errors.empty?, "a new run starts with no entries"
+    end
+  end
+
+  it "joins the humanized column in full_messages" do
+    with_tables do |db|
+      person = Person.new(db, first_name: "Alexander")
+      assert !person.valid?
+      assert person.errors.full_messages == [
+        "First name is too long (maximum is 5 characters)",
+        "Last name can't be blank",
+        "Age can't be blank",
+        "Member can't be blank",
+      ]
+      assert humanize("first_name") == "First name"
+      assert humanize("author_id") == "Author"
+      assert humanize("name") == "Name"
+    end
+  end
+
+  it "applies one option set to every listed column" do
+    with_tables do |db|
+      assert good_person(db).valid?
+      person = good_person(db)
+      person.first_name = nil
+      person.last_name = ""
+      assert !person.valid?
+      assert person.errors.on(:first_name) == ["can't be blank"]
+      assert person.errors.on(:last_name) == ["can't be blank"]
+    end
+  end
+
+  it "checks presence of non-text columns: nil and false are blank, zero is present" do
+    with_tables do |db|
+      person = good_person(db)
+      person.age = 0
+      assert person.valid?
+      person.member = false
+      assert !person.valid?
+      assert person.errors.on(:member) == ["can't be blank"]
+      person.member = true
+      person.age = nil
+      assert !person.valid?
+      assert person.errors.on(:age) == ["can't be blank"]
+    end
+  end
+
+  it "keeps entries per record and supports add, on, empty? and size" do
+    with_tables do |db|
+      one = good_post(db)
+      two = good_post(db)
+      one.errors.add(:title, "is odd")
+      one.errors.add(:title, "is short")
+      one.errors.add(:base, "Record is invalid")
+      assert one.errors.size == 3
+      assert one.errors.any?
+      assert one.errors.on(:title) == ["is odd", "is short"]
+      assert one.errors.on(:body) == [] of String
+      assert one.errors.on(:base) == ["Record is invalid"]
+      assert one.errors.full_messages == ["Title is odd", "Title is short", "Record is invalid"]
+      assert two.errors.empty?, "another record's entries are its own"
+    end
+  end
+
+  it "validates a record-level rule" do
+    with_tables do |db|
+      signup = Signup.new(db, password: "123", password_check: "123")
+      assert signup.valid?
+      signup.password_check = "1234"
+      assert !signup.valid?
+      assert signup.errors.full_messages == ["password and validation should match"]
+    end
+  end
+end
+
+describe "invalid save" do
+  it "returns RecordInvalid with the first message and the count, and writes nothing" do
+    with_tables do |db|
+      post = good_post(db)
+      post.title = nil
+      post.plan = "gold"
+      result = post.save
+      assert result.is_a?(RecordInvalid)
+      if result.is_a?(RecordInvalid)
+        assert result.count == 2
+        assert result.message == "posts save: Title can't be blank (and 1 more)"
+      end
+      assert post.new_record?
+      assert post.errors.size == 2, "the messages stay on the record"
+      assert Post[db].count.or_panic == 0_i64
+      assert !db.statements.any?(&.starts_with?("INSERT")), "no write is sent"
+      assert !db.statements.includes?("BEGIN IMMEDIATE"), "no write is opened"
+    end
+  end
+
+  it "returns RecordInvalid from create and from an update" do
+    with_tables do |db|
+      created = Post.create(db, title: "", body: "abcd", code: "abcd", slug: "abc", plan: "free", rank: 1)
+      assert created.is_a?(RecordInvalid)
+      if created.is_a?(RecordInvalid)
+        assert created.count == 1
+        assert created.message == "posts save: Title can't be blank"
+      end
+      post = good_post(db).save.or_panic
+      post.body = "x"
+      assert post.save.is_a?(RecordInvalid)
+      assert Post[db].find(post.id).or_panic.body == "abcd", "the row keeps its old value"
+      assert post.changed?, "the unsaved change stays"
+      post.body = "fine"
+      post.save.or_panic
+      assert Post[db].find(post.id).or_panic.body == "fine"
+    end
+  end
+
+  it "rolls back only its own savepoint inside a write" do
+    with_tables do |db|
+      db.write do |tx|
+        good_post(tx).save.or_panic
+        bad = Post.create(tx, title: nil)
+        assert bad.is_a?(RecordInvalid)
+        nil
+      end.or_panic
+      assert Post[db].count.or_panic == 1_i64
+    end
+  end
+end
