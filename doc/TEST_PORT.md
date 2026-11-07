@@ -15,7 +15,7 @@ completed:
 | test/attribute_spec_models.ri | drop |  |  | support file, not a test | |
 | test/convenience_models.ri | drop |  |  | support file, not a test | |
 | test/converter_spec_support.ri | drop |  |  | support file, not a test | |
-| test/delete_test.ri | port | test/crud_test.ri | M1 |  | |
+| test/delete_test.ri | port | test/crud_test.ri | M1 | rollback restoring a destroyed record's flags deferred: store flags are not reset when a write rolls back | x |
 | test/dirty_family_models.ri | drop |  |  | support file, not a test | |
 | test/encryption_codec_regression_test.ri | defer |  |  | encryption is in Future Improvements | |
 | test/grant_adapter_read_tape_test.ri | drop |  |  | adapter and config layer replaced by Ricord.open and the URI scheme | |
@@ -44,7 +44,7 @@ completed:
 | test/grant_attributes_reflection_test.ri | defer |  |  | attribute API extras are not in v1 | |
 | test/grant_attributes_store_accessor_test.ri | port | test/json_field_test.ri | M2 |  | |
 | test/grant_attributes_w6_alias_query_test.ri | defer |  |  | attribute API extras are not in v1 | |
-| test/grant_boolean_predicates_test.ri | port | test/crud_test.ri | M1 |  | |
+| test/grant_boolean_predicates_test.ri | drop |  |  | schema tenants and replica lag tracking removed | |
 | test/grant_callbacks_abort_test.ri | port | test/callback_test.ri | M2 |  | |
 | test/grant_callbacks_after_commit_timing_test.ri | port | test/after_commit_test.ri | M2 |  | |
 | test/grant_callbacks_after_save_commit_test.ri | port | test/after_commit_test.ri | M2 |  | |
@@ -57,13 +57,13 @@ completed:
 | test/grant_callbacks_prepend_test.ri | drop |  |  | around/prepend/proc callbacks are not in v1 | |
 | test/grant_callbacks_proc_conditions_test.ri | drop |  |  | around/prepend/proc callbacks are not in v1 | |
 | test/grant_callbacks_run_callbacks_test.ri | drop |  |  | around/prepend/proc callbacks are not in v1 | |
-| test/grant_columns_primary_key_auto_default_test.ri | port | test/schema_test.ri | M1 |  | |
-| test/grant_columns_primary_key_test.ri | port | test/schema_test.ri | M1 |  | |
-| test/grant_columns_uuid_test.ri | port | test/schema_test.ri | M1 |  | |
-| test/grant_columns_w6b_bigdecimal_column_test.ri | port | test/schema_test.ri | M1 |  | |
-| test/grant_config_database_configurations_adapters_test.ri | port | test/crud_test.ri | M1 |  | |
-| test/grant_config_database_configurations_test.ri | port | test/crud_test.ri | M1 |  | |
-| test/grant_config_url_scheme_test.ri | port | test/crud_test.ri | M1 |  | |
+| test/grant_columns_primary_key_auto_default_test.ri | port | test/schema_test.ri | M1 | only the integer auto key applies; String and explicit keys dropped (id is always INTEGER AUTOINCREMENT) | x |
+| test/grant_columns_primary_key_test.ri | drop |  |  | custom and non-auto primary keys removed (id is always INTEGER AUTOINCREMENT) | |
+| test/grant_columns_uuid_test.ri | drop |  |  | UUID primary keys removed | |
+| test/grant_columns_w6b_bigdecimal_column_test.ri | defer |  |  | `:decimal` waits for `Ricord::Decimal` | |
+| test/grant_config_database_configurations_adapters_test.ri | drop |  |  | YAML database configurations and adapter registry replaced by Ricord.open(uri) | |
+| test/grant_config_database_configurations_test.ri | drop |  |  | YAML database configurations and adapter registry replaced by Ricord.open(uri) | |
+| test/grant_config_url_scheme_test.ri | port | test/errors_test.ri | M1 | only scheme to dialect applies; PostgreSQL, MySQL and the adapter registry dropped | x |
 | test/grant_connection_abstract_inheritance_test.ri | drop |  |  | connection pools, roles and routing removed (one connection per session) | |
 | test/grant_connection_connected_to_predicates_test.ri | drop |  |  | connection pools, roles and routing removed (one connection per session) | |
 | test/grant_connection_connects_to_hash_test.ri | drop |  |  | connection pools, roles and routing removed (one connection per session) | |
@@ -88,21 +88,21 @@ completed:
 | test/grant_connection_w6_connected_to_role_hash_test.ri | drop |  |  | connection pools, roles and routing removed (one connection per session) | |
 | test/grant_connection_w6_connects_to_registry_test.ri | drop |  |  | connection pools, roles and routing removed (one connection per session) | |
 | test/grant_connection_w6_database_tasks_configuration_test.ri | drop |  |  | connection pools, roles and routing removed (one connection per session) | |
-| test/grant_connection_w6_no_database_error_test.ri | port | test/crud_test.ri | M1 |  | |
+| test/grant_connection_w6_no_database_error_test.ri | port | test/errors_test.ri | M1 | SQLite only: libturso dies of a memory fault opening a file in a missing directory; pools and refused servers dropped | x |
 | test/grant_connection_w6_reconnect_idle_pg_test.ri | drop |  |  | PostgreSQL or MySQL only | |
 | test/grant_connection_w6_reconnect_idle_policy_test.ri | drop |  |  | reconnect policies removed (a session owns its connection for its block) | |
 | test/grant_connection_w6_reconnect_idle_test.ri | drop |  |  | reconnect policies removed (a session owns its connection for its block) | |
-| test/grant_connection_w6_statement_invalid_sql_adapter_test.ri | port | test/crud_test.ri | M1 |  | |
-| test/grant_connection_w6_statement_invalid_sql_facade_test.ri | port | test/crud_test.ri | M1 |  | |
-| test/grant_connection_w6_statement_invalid_sql_pinned_test.ri | port | test/crud_test.ri | M1 |  | |
-| test/grant_connection_w6_statement_invalid_sql_query_aggregations_test.ri | port | test/crud_test.ri | M1 |  | |
-| test/grant_connection_w6_statement_invalid_sql_query_mutations_test.ri | port | test/crud_test.ri | M1 |  | |
-| test/grant_connection_w6_statement_invalid_sql_query_reads_test.ri | port | test/crud_test.ri | M1 |  | |
-| test/grant_connection_w6_statement_invalid_sql_query_values_test.ri | port | test/crud_test.ri | M1 |  | |
-| test/grant_connection_w6_statement_invalid_sql_test.ri | port | test/crud_test.ri | M1 |  | |
+| test/grant_connection_w6_statement_invalid_sql_adapter_test.ri | port | test/errors_test.ri | M1 | raw scalar/exec errors; DatabaseError has no sql field, the message names the column | x |
+| test/grant_connection_w6_statement_invalid_sql_facade_test.ri | port | test/errors_test.ri | M1 | raw scalar/query errors; select_rows/select_one facade dropped | x |
+| test/grant_connection_w6_statement_invalid_sql_pinned_test.ri | port | test/errors_test.ri | M1 | an error inside a write rolls it back; pinned connections dropped | x |
+| test/grant_connection_w6_statement_invalid_sql_query_aggregations_test.ri | defer |  |  | sum/avg/min/max and grouped count are not in Ricord | |
+| test/grant_connection_w6_statement_invalid_sql_query_mutations_test.ri | defer |  |  | update_all, delete_all and batched each are not built yet | |
+| test/grant_connection_w6_statement_invalid_sql_query_reads_test.ri | port | test/errors_test.ri | M1 | to_a/first/find_by errors and binds kept out of the message; last and bind caps not in Ricord | x |
+| test/grant_connection_w6_statement_invalid_sql_query_values_test.ri | port | test/errors_test.ri | M1 | count and exists? errors; pluck, pick and ids not built yet | x |
+| test/grant_connection_w6_statement_invalid_sql_test.ri | port | test/errors_test.ri | M1 | insert and update errors; a read of a missing double-quoted column returns its name as text (SQLite/Turso double-quoted string literals), so it is not tested | x |
 | test/grant_connection_with_connection_pool_test.ri | drop |  |  | connection pools, roles and routing removed (one connection per session) | |
-| test/grant_connection_with_connection_test.ri | port | test/crud_test.ri | M1 |  | |
-| test/grant_convenience_class_destroy_update_test.ri | port | test/crud_test.ri | M1 |  | |
+| test/grant_connection_with_connection_test.ri | drop |  |  | pinned connections and roles removed (one connection per session) | |
+| test/grant_convenience_class_destroy_update_test.ri | defer |  |  | class-level destroy(id), delete(id), update(id) are not in Ricord; instance find + destroy is in test/crud_test.ri | |
 | test/grant_convenience_create_block_array_test.ri | port | test/crud_test.ri | M1 |  | |
 | test/grant_convenience_create_or_find_by_test.ri | port | test/crud_test.ri | M1 |  | |
 | test/grant_convenience_create_with_test.ri | port | test/crud_test.ri | M1 |  | |

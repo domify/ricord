@@ -1,0 +1,130 @@
+# M1: SQL the database refuses comes back as a DatabaseError value from every read,
+# write and raw entry point; the session keeps working after it, a failure inside a
+# write rolls it back, and opening a database that cannot exist returns the driver's
+# error. Ported from Grant's w6 statement-invalid and no-database tests.
+module test/errors_test
+
+import std/env
+import db/db/spec::{describe, it}
+import db/db/errors::{DBError}
+import db/db/value::{DBValue}
+import ricord
+import sqlite/sqlite/turso
+import ricord/model::{model}
+import ricord/failures::{DatabaseError}
+import test/spec_helper::*
+import test/models::*
+
+# A model over the courts table naming a column the table lacks. Only its writes
+# fail: SQLite and Turso read a double-quoted name that is no column as a string
+# literal, so `SELECT "ghost"` returns the text "ghost" (see doc/TEST_PORT.md).
+model GhostCourt do
+  table :courts
+  col :name, :string
+  col :ghost, :string, null: true
+end
+
+describe "errors" do
+  it "returns a DatabaseError from inserts and updates naming a missing column" do
+    with_db do |db|
+      created = GhostCourt.create(db, name: "x", ghost: "y")
+      assert created.is_a?(DatabaseError)
+      assert created.as(DatabaseError).message.includes?("ghost")
+      assert Court[db].count.or_panic == 0_i64, "the refused insert left no row"
+      record = GhostCourt.create(db, name: "b").or_panic
+      record.ghost = "z"
+      updated = record.save
+      assert updated.is_a?(DatabaseError)
+      assert updated.as(DatabaseError).message.includes?("ghost")
+      court = Court.create(db, name: "c").or_panic
+      assert Court[db].count.or_panic == 2_i64
+      court.name = "d"
+      court.save.or_panic
+      assert Court[db].find(court.id).or_panic.name == "d", "a later write still commits"
+    end
+  end
+
+  it "returns a DatabaseError from raw conditions in every query form" do
+    with_db do |db|
+      Court.create(db, name: "a", rank: 1).or_panic
+      bad = Court[db].where("missing_col = 1")
+      assert bad.to_a.is_a?(DatabaseError)
+      assert bad.first.is_a?(DatabaseError)
+      assert bad.find_by(name: "a").is_a?(DatabaseError)
+      assert bad.find(1).is_a?(DatabaseError)
+      assert bad.count.is_a?(DatabaseError)
+      assert bad.exists?.is_a?(DatabaseError)
+      counted = bad.count
+      assert counted.as(DatabaseError).message.includes?("missing_col")
+      good = Court[db].where("rank = ?", 1)
+      assert good.count.or_panic == 1_i64
+      assert good.exists?.or_panic
+      assert Court[db].where("rank = ?", 2).first.or_panic.nil?
+      assert Court[db].where("rank = ?", 2).count.or_panic == 0_i64
+    end
+  end
+
+  it "keeps bound values out of the message" do
+    with_db do |db|
+      failed = Court[db].where("missing_col = ?", "secret-value").to_a
+      assert failed.is_a?(DatabaseError)
+      assert !failed.as(DatabaseError).message.includes?("secret-value")
+    end
+  end
+
+  it "returns a DatabaseError from raw exec, scalar and query" do
+    with_db do |db|
+      Court.create(db, name: "a", rank: 1).or_panic
+      scalar = db.scalar("SELECT missing_col FROM courts", Int64)
+      assert scalar.is_a?(DatabaseError)
+      assert scalar.as(DatabaseError).message.includes?("missing_col")
+      exec = db.exec("UPDATE courts SET missing_col = 1")
+      assert exec.is_a?(DatabaseError)
+      assert exec.as(DatabaseError).message.includes?("missing_col")
+      query = db.query("SELECT missing_col FROM courts") { |rs| rs.move_next; 0 }
+      assert query.is_a?(DatabaseError)
+      args = [1_i64.as(DBValue)]
+      assert db.scalar("SELECT count(*) FROM courts WHERE rank = ?", Int64, args).or_panic == 1_i64
+      assert db.scalar("SELECT count(*) FROM courts", Int64).or_panic == 1_i64
+    end
+  end
+
+  it "rolls back a write whose block returns a DatabaseError" do
+    with_db do |db|
+      result = db.write do |tx|
+        Court.create(tx, name: "kept?").or_panic
+        failed = tx.exec("UPDATE courts SET missing_col = 1")
+        failed.is_a?(DatabaseError) ? failed : nil
+      end
+      assert result.is_a?(DatabaseError)
+      assert result.as(DatabaseError).message.includes?("missing_col")
+      assert db.statements.includes?("ROLLBACK")
+      assert Court[db].count.or_panic == 0_i64
+      Court.create(db, name: "after").or_panic
+      assert Court[db].count.or_panic == 1_i64
+    end
+  end
+end
+
+describe "opening" do
+  # SQLite only: libturso dies of a memory fault opening a file in a missing
+  # directory (doc/TEST_PORT.md, grant_connection_w6_no_database_error).
+  it "returns the driver's error for a database that cannot exist" do
+    unless database_url.starts_with?("turso:")
+      result = Ricord.open("sqlite3:/ricord_no_such_directory/missing.db") do |db|
+        db.scalar("SELECT 1", Int64)
+      end
+      assert result.is_a?(DBError), "a missing directory is the driver's error"
+      assert result.as(DBError).message.includes?("unable to open")
+    end
+  end
+
+  it "picks the dialect from the URI scheme" do
+    url = database_url
+    Ricord.open(url) do |db|
+      assert db.dialect.name == (url.starts_with?("turso:") ? "turso" : "sqlite")
+      assert db.scalar("SELECT 1", Int64).or_panic == 1_i64
+      nil
+    end.or_panic
+  end
+end

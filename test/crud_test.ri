@@ -72,4 +72,27 @@ describe "crud" do
       assert Court[db].count.or_panic == 0_i64
     end
   end
+
+  it "marks a destroyed record and removes its row" do
+    with_db do |db|
+      court = Court.create(db, name: "delete me").or_panic
+      kept = Court.create(db, name: "keep me").or_panic
+      assert court.destroy.or_panic.destroyed?
+      assert !court.persisted?
+      assert Court[db].find(court.id).is_a?(RecordNotFound)
+      assert db.statements.any?(&.starts_with?("DELETE FROM \"courts\" WHERE \"id\" = ?"))
+      assert Court[db].find(kept.id).or_panic.name == "keep me", "only its own row goes"
+    end
+  end
+
+  it "destroys a record found by id, and reports a missing id" do
+    with_db do |db|
+      court = Court.create(db, name: "a").or_panic
+      Court[db].find(court.id).or_panic.destroy.or_panic
+      assert Court[db].count.or_panic == 0_i64
+      missing = Court[db].find(999_999)
+      assert missing.is_a?(RecordNotFound)
+      assert missing.as(RecordNotFound).id == 999_999_i64
+    end
+  end
 end

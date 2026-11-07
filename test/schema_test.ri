@@ -23,6 +23,18 @@ describe "schema" do
     end
   end
 
+  it "generates the integer primary key" do
+    with_db do |db|
+      one = Court.create(db, name: "one").or_panic
+      two = Court.create(db, name: "two").or_panic
+      assert one.id == 1_i64 && two.id == 2_i64
+      assert Court[db].find(two.id).or_panic.name == "two"
+      two.destroy.or_panic
+      three = Court.create(db, name: "three").or_panic
+      assert three.id == 3_i64, "AUTOINCREMENT does not reuse a deleted id"
+    end
+  end
+
   it "enforces on_delete" do
     with_db do |db|
       account = Account.create(db, name: "acme").or_panic

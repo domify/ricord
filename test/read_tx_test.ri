@@ -2,7 +2,9 @@
 # a transaction left open is rolled back by the next write.
 module test/read_tx_test
 
+import std/log::{RisMemoryBackend, Severity}
 import db/db/spec::{describe, it}
+import ricord/sessions::{LOG}
 import test/spec_helper::*
 import test/models::*
 
@@ -38,6 +40,30 @@ describe "read transaction" do
       end
       assert db.statements.last == "COMMIT"
     end
+  end
+
+  it "logs a read held longer than 100 ms at warn level" do
+    memory = RisMemoryBackend.on_program
+    LOG.backend = memory
+    with_db do |db|
+      Court[db].count.or_panic
+      db.release
+      quick = memory.entries.count { |e| e.severity == Severity::Warn && e.message.includes?("held") }
+      assert quick == 0, "a short read is not logged"
+      Court[db].count.or_panic
+      sleep(150)
+      db.release
+      held = memory.entries.count { |e| e.severity == Severity::Warn && e.message.includes?("read transaction held") }
+      assert held == 1, "the long read is logged once at warn"
+    end
+    memory.clear
+    with_db(log: false) do |db|
+      Court[db].count.or_panic
+      sleep(150)
+      db.release
+    end
+    assert memory.entries.empty?, "no warning without log: true"
+    LOG.backend = nil
   end
 
   it "rolls back a transaction left open" do
