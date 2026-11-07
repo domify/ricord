@@ -3,6 +3,7 @@
 module ricord/sessions
 
 import std/time::{Time}
+import std/int
 import std/slice::{Bytes}
 import std/log::{Log}
 import db/db/db
@@ -12,11 +13,60 @@ import db/db/value::{DBValue}
 import ricord/values::{Value, ByteSpan}
 import ricord/storage::{Store}
 import ricord/dialects::{Dialect, Sqlite, Turso}
-import ricord/failures::{Failure, DatabaseError, Rollback}
-import ricord/commit_queue::{CommitItem}
+import ricord/failures::{Failure, DatabaseError, Rollback, AfterCommitError}
+import ricord/failures::{Error}
+pub import ricord/commit_queue
+import ricord/commit_queue::{KIND_CREATE, KIND_UPDATE, KIND_DESTROY, KIND_ROLLBACK, CHAIN_LIMIT}
 
 pub READ_HOLD_WARN = Time::Span.new(milliseconds: 100_i64)
 pub LOG = Log.for("ricord")
+
+# One queued after-commit or after-rollback item, flat (doc/DESIGN.md, M2
+# item 2): no record, no closure.
+pub struct CommitItem
+  getter key : Int64
+  getter kind : UInt8
+  getter method : Int32
+  getter depth : Int32
+  getter chain : Int32
+  getter model : Int32
+  # A non-capturing proc to the model's generated `__after_commit`.
+  getter dispatch : Proc(Db, Int64, UInt8, Int32, Nil | Error)
+  # True for the rollback item of a create: its key is the new id, but the
+  # rolled-back row never existed, so `after_rollback` gets nil.
+  getter created : Bool
+
+  def initialize(@key : Int64, @kind : UInt8, @method : Int32, @depth : Int32, @chain : Int32, @model : Int32, @dispatch : Proc(Db, Int64, UInt8, Int32, Nil | Error), @created : Bool = false)
+  end
+
+  # The key `dispatch` gets: -1 for a create.
+  def dispatch_key : Int64
+    @created ? -1_i64 : @key
+  end
+
+  # The same item at another write depth (a released savepoint moves its items up).
+  def at_depth(depth : Int32) : CommitItem
+    CommitItem.new(@key, @kind, @method, depth, @chain, @model, @dispatch, @created)
+  end
+
+  # The same item for the record *key* (a create learns its id after the insert).
+  def with_key(key : Int64) : CommitItem
+    CommitItem.new(key, @kind, @method, @depth, @chain, @model, @dispatch, true)
+  end
+
+  # Whether *other* was queued for the same record by the same model.
+  def same_record?(other : CommitItem) : Bool
+    @key == other.key && @key != -1 && @model == other.model
+  end
+end
+
+# The `model` of a commit item in the proc variant, where MODEL_ID is not
+# assigned: a 31-bit FNV-1a hash of the table name, so items of one model compare.
+pub def model_key(table : String) : Int32
+  hash = 2166136261_u32
+  table.each_byte { |byte| hash = (hash ^ byte.to_u32) &* 16777619_u32 }
+  (hash & 0x7fffffff_u32).to_i32
+end
 
 # The transaction state one connection's sessions share.
 pub class TxState
@@ -25,7 +75,23 @@ pub class TxState
   property reading = false
   property read_since = Time.utc(1970, 1, 1)
   property chain = 0
+  # Where the items of the open outermost write start in `pending`.
+  property base = 0
+  # True while `run_after_commit` runs: a write that commits leaves its items to it.
+  property draining = false
   getter pending = [] of CommitItem
+
+  # Gives the id-less rollback items of *model* queued from *start* the new
+  # record's *key*, so a later update of the same record does not queue a second one.
+  def rekey(start : Int32, model : Int32, key : Int64) : Nil
+    index = start
+    while index < @pending.size
+      item = @pending[index]
+      @pending[index] = item.with_key(key) if item.key == -1 && item.model == model
+      index += 1
+    end
+    nil
+  end
   getter log_text = String::Builder.new
   getter log_spans = [] of String::Span
 
@@ -125,39 +191,175 @@ pub struct Session
 
   # The block in a write: `BEGIN IMMEDIATE`, or a savepoint inside one. A block
   # value that is a `Failure` rolls back and is returned; any other commits.
-  def write(& : Tx -> T) : T | DatabaseError forall T
+  # After the outermost COMMIT the queued after-commit items run; one that
+  # fails makes the write return `AfterCommitError` (doc/DESIGN.md, M2 item 2).
+  def write(& : Tx -> T) : T | DatabaseError | AfterCommitError forall T
     if @state.depth == 0
       end_read
       if @conn.transaction_state.in_transaction?
         run("ROLLBACK")
       end
+      start = @state.pending.size
+      saved_base = @state.base
       run(@dialect.begin_write)!
+      @state.base = start
       @state.depth = 1
       tx = Tx.new(self, 1)
       value = yield tx
       @state.depth = 0
       if value.is_a?(Failure)
         run("ROLLBACK")
-      else
-        run("COMMIT")!
+        rolled_back(start, 1)
+        @state.base = saved_base
+        return value
       end
+      committed = run("COMMIT")
+      if committed.is_a?(DatabaseError)
+        # The next write rolls the failed transaction back, as before M2.
+        rolled_back(start, 1)
+        @state.base = saved_base
+        return committed
+      end
+      @state.base = saved_base
+      drop_rollback_items(start)
+      return value if @state.draining
+      failed = run_after_commit(start)
+      return failed if failed
       value
     else
       @state.savepoints += 1
       name = "ricord_#{@state.savepoints}"
       run("SAVEPOINT #{name}")!
       @state.depth += 1
-      tx = Tx.new(self, @state.depth)
+      level = @state.depth
+      tx = Tx.new(self, level)
       value = yield tx
       @state.depth -= 1
       if value.is_a?(Failure)
         run("ROLLBACK TO #{name}")
         run("RELEASE #{name}")
+        rolled_back(@state.base, level)
       else
         run("RELEASE #{name}")!
+        index = @state.base
+        while index < @state.pending.size
+          item = @state.pending[index]
+          @state.pending[index] = item.at_depth(@state.depth) if item.depth > @state.depth
+          index += 1
+        end
       end
       value
     end
+  end
+
+  # After a ROLLBACK (level 1) or ROLLBACK TO (level n): the rollback items
+  # queued from *start* at depth >= level run, once per record and method,
+  # then every item from *start* at that depth is dropped.
+  private def rolled_back(start : Int32, level : Int32) : Nil
+    stop = @state.pending.size
+    index = start
+    while index < stop
+      item = @state.pending[index]
+      if item.kind == KIND_ROLLBACK && item.depth >= level && !repeated_rollback?(start, index, level)
+        item.dispatch.call(self, item.dispatch_key, item.kind, item.method)
+      end
+      index += 1
+    end
+    kept = start
+    index = start
+    while index < @state.pending.size
+      item = @state.pending[index]
+      if item.depth < level
+        @state.pending[kept] = item
+        kept += 1
+      end
+      index += 1
+    end
+    truncate(kept)
+    nil
+  end
+
+  # Whether an earlier rollback item that runs at *level* covers the same record and method.
+  private def repeated_rollback?(start : Int32, index : Int32, level : Int32) : Bool
+    item = @state.pending[index]
+    j = start
+    while j < index
+      other = @state.pending[j]
+      return true if other.kind == KIND_ROLLBACK && other.depth >= level && other.method == item.method && item.same_record?(other)
+      j += 1
+    end
+    false
+  end
+
+  # After a COMMIT the rollback items from *start* are discarded unrun.
+  private def drop_rollback_items(start : Int32) : Nil
+    kept = start
+    index = start
+    while index < @state.pending.size
+      item = @state.pending[index]
+      unless item.kind == KIND_ROLLBACK
+        @state.pending[kept] = item
+        kept += 1
+      end
+      index += 1
+    end
+    truncate(kept)
+    nil
+  end
+
+  private def truncate(size : Int32) : Nil
+    while @state.pending.size > size
+      @state.pending.pop
+    end
+    nil
+  end
+
+  # Runs the commit items queued from *start*, each in its own write, in queue
+  # order and then the ones they queue (breadth-first) until none is left.
+  # Each error is logged; the first comes back as `AfterCommitError`.
+  def run_after_commit(start : Int32) : AfterCommitError | Nil
+    @state.draining = true
+    first = nil.as(AfterCommitError | Nil)
+    index = start
+    while index < @state.pending.size
+      item = @state.pending[index]
+      index += 1
+      next if item.kind == KIND_ROLLBACK || superseded?(start, index - 1)
+      if item.chain >= CHAIN_LIMIT
+        LOG.error { "after_commit for #{item.key} not run: chain limit of #{CHAIN_LIMIT} reached" }
+        first = AfterCommitError.new("", item.key, "chain limit of #{CHAIN_LIMIT} reached") if first.nil?
+        next
+      end
+      @state.chain = item.chain + 1
+      result = write { |tx| item.dispatch.call(tx, item.key, item.kind, item.method) }
+      @state.chain = 0
+      if result.is_a?(Failure)
+        failure = AfterCommitError.new("", item.key, result.message)
+        LOG.error { "#{failure.message} (record #{failure.id})" }
+        first = failure if first.nil?
+      end
+    end
+    @state.draining = false
+    truncate(start)
+    first
+  end
+
+  # Whether the item at *index* is covered by another item for the same record
+  # in the same chain: a destroy replaces a create or update, a create covers
+  # a later update, and one method of one kind runs once.
+  private def superseded?(start : Int32, index : Int32) : Bool
+    item = @state.pending[index]
+    j = start
+    while j < @state.pending.size
+      other = @state.pending[j]
+      if j != index && other.kind != KIND_ROLLBACK && other.chain == item.chain && item.same_record?(other)
+        return true if other.kind == KIND_DESTROY && item.kind != KIND_DESTROY
+        return true if item.kind == KIND_UPDATE && other.kind == KIND_CREATE
+        return true if j < index && other.kind == item.kind && other.method == item.method
+      end
+      j += 1
+    end
+    false
   end
 
   # A child session with a fresh store for one request; the read transaction
@@ -172,6 +374,7 @@ pub struct Session
     if @state.depth > 0
       run("ROLLBACK")
       @state.depth = 0
+      rolled_back(@state.base, 1)
     end
     end_read
     value
@@ -199,7 +402,7 @@ pub struct Tx
     Rollback.new
   end
 
-  def write(& : Tx -> T) : T | DatabaseError forall T
+  def write(& : Tx -> T) : T | DatabaseError | AfterCommitError forall T
     @session.write { |tx| yield tx }
   end
 

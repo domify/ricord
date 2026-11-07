@@ -1,0 +1,468 @@
+# M2: the after-commit queue (doc/DESIGN.md, M2 item 2 and "After-commit
+# queue"). Items queued by save and destroy run after the outermost COMMIT,
+# each in its own write; rollback items run after a ROLLBACK or ROLLBACK TO.
+module test/after_commit_test
+
+import db/db/spec::{describe, it}
+import ricord
+import ricord/model::{model}
+import ricord/sessions::{Session, Tx}
+import ricord/failures::{AfterCommitError, DatabaseError, Rollback}
+import test/spec_helper::*
+import test/models::*
+
+# What the callbacks did, in order, one word each.
+class Trail
+  @@text = String::Builder.new.copy_to(Program.tape)
+  # Where the current test's words start in `@@text`.
+  @@start : Int32 = 0
+
+  def self.add(word : String) : Nil
+    @@text << word << ' '
+    nil
+  end
+
+  def self.add_id(word : String, id : Int64 | Nil) : Nil
+    @@text << word << ':'
+    if id
+      @@text << id
+    else
+      @@text << "nil"
+    end
+    @@text << ' '
+    nil
+  end
+
+  def self.text : String
+    all = @@text.to_s
+    all[@@start, all.bytesize - @@start].rstrip
+  end
+
+  def self.reset : Nil
+    @@start = @@text.bytesize
+    nil
+  end
+end
+
+# after_commit on every kind and after_rollback. A note named "bad" fails its
+# item; a note named "chain" saves another "chain" note from its item.
+model Note do
+  table :notes
+  col :name, :string
+  after_commit :noted
+  after_rollback :undone
+
+  def noted : Nil | ::Ricord::Failures::Error
+    Trail.add("commit:#{name}")
+    return ::Ricord::Failures::DatabaseError.new(TABLE, "test", "bad note") if name == "bad"
+    if name == "chain"
+      made = Note.create(session, name: "chain")
+      return made if made.is_a?(::Ricord::Failures::Failure)
+    end
+    nil
+  end
+
+  def self.noted(tx : ::Ricord::Sessions::Tx, id : Int64) : Nil | ::Ricord::Failures::Error
+    Trail.add_id("destroy", id)
+    nil
+  end
+
+  def self.undone(session : ::Ricord::Sessions::Session, id : Int64 | Nil) : Nil
+    Trail.add_id("rollback", id)
+    nil
+  end
+end
+
+# The short forms and on:, in declaration order.
+model Memo do
+  table :memos
+  col :name, :string
+  after_create_commit :made
+  after_update_commit :changed
+  after_save_commit :saved
+  after_commit :both, on: [:create, :update]
+  after_commit :any
+  after_destroy_commit :gone
+
+  def made : Nil | ::Ricord::Failures::Error
+    Trail.add("create")
+    nil
+  end
+
+  def changed : Nil | ::Ricord::Failures::Error
+    Trail.add("update")
+    nil
+  end
+
+  def saved : Nil | ::Ricord::Failures::Error
+    Trail.add("save")
+    nil
+  end
+
+  def both : Nil | ::Ricord::Failures::Error
+    Trail.add("cu")
+    nil
+  end
+
+  def any : Nil | ::Ricord::Failures::Error
+    Trail.add("any:#{name}")
+    nil
+  end
+
+  def self.any(tx : ::Ricord::Sessions::Tx, id : Int64) : Nil | ::Ricord::Failures::Error
+    Trail.add("any:destroy")
+    nil
+  end
+
+  def self.gone(tx : ::Ricord::Sessions::Tx, id : Int64) : Nil | ::Ricord::Failures::Error
+    Trail.add("destroy")
+    nil
+  end
+end
+
+def with_queue_db(& : Session -> Nil) : Nil
+  with_db do |db|
+    Note.create_table(db).or_panic
+    Memo.create_table(db).or_panic
+    db.release
+    Trail.reset
+    yield db
+  end
+end
+
+describe "after_commit" do
+  it "runs after COMMIT, once per record, and reads the committed row" do
+    with_queue_db do |db|
+      db.write do |tx|
+        a = Note.create(tx, name: "a").or_panic
+        Note.create(tx, name: "b").or_panic
+        a.name = "a2"
+        a.save.or_panic
+        assert Trail.text == "", "nothing runs inside the write"
+        nil
+      end.or_panic
+      assert Trail.text == "commit:a2 commit:b", Trail.text
+      log = db.statements
+      commit = log.index("COMMIT") || -1
+      assert commit >= 0
+      assert log[commit + 1] == "BEGIN IMMEDIATE", "the first item opens its own write after the COMMIT"
+    end
+  end
+
+  it "runs each item in its own write" do
+    with_queue_db do |db|
+      db.write do |tx|
+        Note.create(tx, name: "a").or_panic
+        Note.create(tx, name: "b").or_panic
+        nil
+      end.or_panic
+      assert db.statements.count { |s| s == "BEGIN IMMEDIATE" } == 3
+      assert db.statements.count { |s| s == "COMMIT" } == 3
+    end
+  end
+
+  it "runs for a lone save, and no rollback item after it" do
+    with_queue_db do |db|
+      note = Note.create(db, name: "solo").or_panic
+      assert Trail.text == "commit:solo"
+      Trail.reset
+      note.name = "solo2"
+      note.save.or_panic
+      assert Trail.text == "commit:solo2"
+    end
+  end
+
+  it "does not run after a rollback; after_rollback runs instead" do
+    with_queue_db do |db|
+      result = db.write do |tx|
+        Note.create(tx, name: "lost").or_panic
+        tx.roll_back
+      end
+      assert result.is_a?(Rollback)
+      assert Trail.text == "rollback:nil", "a rolled-back create has no id"
+      assert db.state.pending.empty?
+      failed = db.write do |tx|
+        Note.create(tx, name: "lost2").or_panic
+        DatabaseError.new("notes", "test", "boom")
+      end
+      assert failed.is_a?(DatabaseError)
+      assert Trail.text == "rollback:nil rollback:nil"
+      assert Note[db].count.or_panic == 0_i64
+    end
+  end
+
+  it "runs after_rollback with the key of a rolled-back update" do
+    with_queue_db do |db|
+      note = Note.create(db, name: "a").or_panic
+      Trail.reset
+      db.write do |tx|
+        note.name = "b"
+        note.save.or_panic
+        note.name = "c"
+        note.save.or_panic
+        tx.roll_back
+      end
+      assert Trail.text == "rollback:#{note.id}", "once per record"
+    end
+  end
+
+  it "runs after_rollback after a savepoint rollback, keeping the outer items" do
+    with_queue_db do |db|
+      note = Note.create(db, name: "x").or_panic
+      Trail.reset
+      db.write do |tx|
+        Note.create(tx, name: "kept").or_panic
+        inner = tx.write do |inner_tx|
+          note.name = "undone"
+          note.save.or_panic
+          inner_tx.roll_back
+        end
+        assert inner.is_a?(Rollback)
+        assert Trail.text == "rollback:#{note.id}", "runs right after ROLLBACK TO"
+        nil
+      end.or_panic
+      assert Trail.text == "rollback:#{note.id} commit:kept"
+    end
+  end
+
+  it "waits for the outermost COMMIT when a savepoint is released" do
+    with_queue_db do |db|
+      db.write do |tx|
+        tx.write do |inner_tx|
+          Note.create(inner_tx, name: "inner").or_panic
+          nil
+        end.or_panic
+        assert Trail.text == ""
+        nil
+      end.or_panic
+      assert Trail.text == "commit:inner"
+    end
+  end
+
+  it "runs after_rollback for a released savepoint's save when the outer write rolls back" do
+    with_queue_db do |db|
+      note = Note.create(db, name: "x").or_panic
+      Trail.reset
+      db.write do |tx|
+        Note.create(tx, name: "outer").or_panic
+        tx.write do |inner_tx|
+          note.name = "inner"
+          note.save.or_panic
+          nil
+        end.or_panic
+        assert Trail.text == ""
+        tx.roll_back
+      end
+      assert Trail.text == "rollback:nil rollback:#{note.id}"
+      assert Note[db].where(name: "outer").count.or_panic == 0_i64
+    end
+  end
+
+  it "runs the items of two models after one commit, and both rollbacks" do
+    with_queue_db do |db|
+      db.write do |tx|
+        Note.create(tx, name: "alpha").or_panic
+        Memo.create(tx, name: "beta").or_panic
+        nil
+      end.or_panic
+      assert Trail.text == "commit:alpha create save cu any:beta"
+    end
+  end
+
+  it "lets the other items run when one fails, and returns AfterCommitError" do
+    with_queue_db do |db|
+      bad_id = 0_i64
+      result = db.write do |tx|
+        bad_id = Note.create(tx, name: "bad").or_panic.id
+        Note.create(tx, name: "ok").or_panic
+        nil
+      end
+      assert result.is_a?(AfterCommitError)
+      if result.is_a?(AfterCommitError)
+        assert result.id == bad_id
+        assert result.message.includes?("bad note")
+      end
+      assert db.state.depth == 0
+      assert !db.conn.transaction_state.in_transaction?, "no write is left open"
+      assert Trail.text == "commit:bad commit:ok"
+      assert Note[db].count.or_panic == 2_i64, "the rows are committed"
+    end
+  end
+
+  it "returns AfterCommitError from a lone save, the row kept" do
+    with_queue_db do |db|
+      note = Note.new(db, name: "bad")
+      result = note.save
+      assert result.is_a?(AfterCommitError)
+      assert note.persisted?
+      assert !note.changed?
+      assert Note[db].count.or_panic == 1_i64
+    end
+  end
+
+  it "passes the key to a destroy item" do
+    with_queue_db do |db|
+      note = Note.create(db, name: "gone").or_panic
+      id = note.id
+      Trail.reset
+      note.destroy.or_panic
+      assert Trail.text == "destroy:#{id}"
+    end
+  end
+
+  it "stops at the chain limit" do
+    with_queue_db do |db|
+      result = Note.create(db, name: "chain")
+      assert result.is_a?(AfterCommitError)
+      if result.is_a?(AfterCommitError)
+        assert result.message.includes?("chain limit of 8")
+      end
+      assert Trail.text.split(' ').size == 8, "chain depths 0-7 run"
+      assert Note[db].count.or_panic == 9_i64, "the ninth row is committed, its item not run"
+      assert db.state.pending.empty?
+      assert db.state.chain == 0
+    end
+  end
+
+  # Ported from grant_callbacks_after_save_commit_test and
+  # grant_callbacks_commit_on_option_test.
+  it "runs the short forms and on: by kind, in declaration order" do
+    with_queue_db do |db|
+      memo = Memo.create(db, name: "a").or_panic
+      assert Trail.text == "create save cu any:a"
+      Trail.reset
+      memo.name = "b"
+      memo.save.or_panic
+      assert Trail.text == "update save cu any:b"
+      Trail.reset
+      memo.destroy.or_panic
+      assert Trail.text == "any:destroy destroy", "after_save_commit and on: [:create, :update] skip a destroy"
+    end
+  end
+
+  it "runs once per record for a create and saves in one write" do
+    with_queue_db do |db|
+      db.write do |tx|
+        memo = Memo.create(tx, name: "a").or_panic
+        memo.name = "b"
+        memo.save.or_panic
+        memo.name = "c"
+        memo.save.or_panic
+        assert Trail.text == ""
+        nil
+      end.or_panic
+      assert Trail.text == "create save cu any:c", "a create then updates is a create"
+    end
+  end
+
+  it "keeps one run per record, not per model" do
+    with_queue_db do |db|
+      db.write do |tx|
+        Memo.create(tx, name: "a").or_panic
+        Memo.create(tx, name: "b").or_panic
+        nil
+      end.or_panic
+      assert Trail.text == "create save cu any:a create save cu any:b"
+    end
+  end
+
+  it "runs again for a later write" do
+    with_queue_db do |db|
+      memo = Memo.create(db, name: "a").or_panic
+      Trail.reset
+      db.write do |tx|
+        memo.name = "b"
+        memo.save.or_panic
+        nil
+      end.or_panic
+      assert Trail.text == "update save cu any:b"
+    end
+  end
+
+  it "does not run commit items when the write rolls back" do
+    with_queue_db do |db|
+      db.write do |tx|
+        Memo.create(tx, name: "a").or_panic
+        tx.roll_back
+      end
+      assert Trail.text == ""
+    end
+  end
+
+  # Ported from grant_callbacks_commit_dedup_savepoint_test.
+  it "drops an update undone by a savepoint rollback, keeping the create" do
+    with_queue_db do |db|
+      db.write do |tx|
+        memo = Memo.create(tx, name: "a").or_panic
+        tx.write do |inner_tx|
+          memo.name = "b"
+          memo.save.or_panic
+          inner_tx.roll_back
+        end
+        nil
+      end.or_panic
+      assert Trail.text == "create save cu any:a"
+    end
+  end
+
+  it "resolves a create then destroy, and an update then destroy, to a destroy" do
+    with_queue_db do |db|
+      db.write do |tx|
+        memo = Memo.create(tx, name: "a").or_panic
+        memo.destroy.or_panic
+        nil
+      end.or_panic
+      assert Trail.text == "any:destroy destroy"
+      memo = Memo.create(db, name: "b").or_panic
+      Trail.reset
+      db.write do |tx|
+        memo.name = "c"
+        memo.save.or_panic
+        memo.destroy.or_panic
+        nil
+      end.or_panic
+      assert Trail.text == "any:destroy destroy"
+    end
+  end
+
+  it "runs a rolled-back destroy's after_rollback with its key" do
+    with_queue_db do |db|
+      note = Note.create(db, name: "a").or_panic
+      Trail.reset
+      db.write do |tx|
+        note.destroy.or_panic
+        tx.roll_back
+      end
+      assert Trail.text == "rollback:#{note.id}"
+      assert Note[db].count.or_panic == 1_i64
+    end
+  end
+
+  it "runs after_rollback once for a create then update of one record" do
+    with_queue_db do |db|
+      result = db.write do |tx|
+        note = Note.create(tx, name: "x").or_panic
+        note.name = "y"
+        note.save.or_panic
+        tx.roll_back
+      end
+      assert result.is_a?(Rollback)
+      assert Trail.text == "rollback:nil", Trail.text
+    end
+  end
+
+  it "runs after_rollback once when the update is in a nested write" do
+    with_queue_db do |db|
+      db.write do |tx|
+        note = Note.create(tx, name: "x").or_panic
+        tx.write do |inner|
+          note.name = "y"
+          note.save.or_panic
+          nil
+        end
+        tx.roll_back
+      end
+      assert Trail.text == "rollback:nil", Trail.text
+    end
+  end
+end

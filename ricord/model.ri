@@ -205,6 +205,8 @@ pub macro model(name, &block)
   {% json_fields = [] of ASTNode %}
   {% expand_timestamps = false %}
   {% stamps = false %}
+  {% commits = [] of ASTNode %}
+  {% rollbacks = [] of ASTNode %}
   {% callbacks = {"before_validation" => [] of ASTNode, "after_validation" => [] of ASTNode, "before_save" => [] of ASTNode, "after_save" => [] of ASTNode, "before_create" => [] of ASTNode, "after_create" => [] of ASTNode, "before_update" => [] of ASTNode, "after_update" => [] of ASTNode, "before_destroy" => [] of ASTNode, "after_destroy" => [] of ASTNode} %}
   {% for e in exprs %}
     {% if e.is_a?(Call) && e.name == "table" %}
@@ -229,6 +231,28 @@ pub macro model(name, &block)
       {% validations << e %}
     {% elsif e.is_a?(Call) && e.name == "validate" %}
       {% custom_validations << e.args[0] %}
+    {% elsif e.is_a?(Call) && ["after_commit", "after_create_commit", "after_update_commit", "after_save_commit", "after_destroy_commit"].includes?(e.name.stringify) %}
+      {% cn = e.name.stringify %}
+      {% on = cn == "after_create_commit" ? ["create"] : (cn == "after_update_commit" ? ["update"] : (cn == "after_save_commit" ? ["create", "update"] : (cn == "after_destroy_commit" ? ["destroy"] : ["create", "update", "destroy"]))) %}
+      {% if e.named_args %}
+        {% for na in e.named_args %}
+          {% unless cn == "after_commit" && na.name.stringify == "on" %}
+            {% raise "model #{name}: #{cn} has unknown option #{na.name}" %}
+          {% end %}
+          {% on = na.value.is_a?(ArrayLiteral) ? na.value.map { |v| v.id.stringify } : [na.value.id.stringify] %}
+          {% for o in on %}
+            {% unless ["create", "update", "destroy"].includes?(o) %}
+              {% raise "model #{name}: after_commit on: takes :create, :update or :destroy, not #{o}" %}
+            {% end %}
+          {% end %}
+        {% end %}
+      {% end %}
+      {% for a in e.args %}{% commits << [a, on.includes?("create"), on.includes?("update"), on.includes?("destroy")] %}{% end %}
+    {% elsif e.is_a?(Call) && e.name == "after_rollback" %}
+      {% if e.named_args %}
+        {% raise "model #{name}: after_rollback takes no options" %}
+      {% end %}
+      {% for a in e.args %}{% rollbacks << a %}{% end %}
     {% elsif e.is_a?(Call) && callbacks[e.name.stringify] %}
       {% for a in e.args %}{% callbacks[e.name.stringify] << a %}{% end %}
     {% elsif e.is_a?(Def) %}
@@ -598,6 +622,11 @@ pub macro model(name, &block)
       was_new = new_record?
       record = self
       result = session.write { |tx| record.save_in(tx) }
+      if result.is_a?(::Ricord::Failures::AfterCommitError)
+        # The row is committed; only its after-commit work failed.
+        store.clear_changed(index, COLUMNS.size)
+        return result
+      end
       if result.is_a?(::Ricord::Failures::Failure)
         if was_new
           store.set_flag(index, ::Ricord::Storage::FLAG_PERSISTED, false)
@@ -610,6 +639,10 @@ pub macro model(name, &block)
     end
 
     def save_in(tx : ::Ricord::Sessions::Tx) : Nil | ::Ricord::Failures::DatabaseError | ::Ricord::Failures::CallbackError
+      queued = tx.session.state.pending.size
+      {% for m, i in rollbacks %}
+        {{name.id}}.__queue(tx, new_record? ? -1_i64 : id, ::Ricord::CommitQueue::KIND_ROLLBACK, {{i}})
+      {% end %}
       {% for m in callbacks["before_save"] %}
         refused = {{m.id}}
         return ::Ricord::Failures::CallbackError.new(TABLE, "save", "before_save {{m.id}}") if refused.is_a?(::Ricord::Failures::Failure)
@@ -632,6 +665,7 @@ pub macro model(name, &block)
       {% end %}
       written = write_row
       return written if written.is_a?(::Ricord::Failures::Failure)
+      tx.session.state.rekey(queued, ::Ricord::Sessions.model_key(TABLE), id) if creating
       if creating
         {% for m in callbacks["after_create"] %}
           refused = {{m.id}}
@@ -646,6 +680,55 @@ pub macro model(name, &block)
       {% for m in callbacks["after_save"] %}
         refused = {{m.id}}
         return ::Ricord::Failures::CallbackError.new(TABLE, "save", "after_save {{m.id}}") if refused.is_a?(::Ricord::Failures::Failure)
+      {% end %}
+      {% for e, i in commits %}
+        {% if e[1] && e[2] %}
+          {{name.id}}.__queue(tx, id, creating ? ::Ricord::CommitQueue::KIND_CREATE : ::Ricord::CommitQueue::KIND_UPDATE, {{i}})
+        {% elsif e[1] %}
+          {{name.id}}.__queue(tx, id, ::Ricord::CommitQueue::KIND_CREATE, {{i}}) if creating
+        {% elsif e[2] %}
+          {{name.id}}.__queue(tx, id, ::Ricord::CommitQueue::KIND_UPDATE, {{i}}) unless creating
+        {% end %}
+      {% end %}
+      nil
+    end
+
+    # Queues one after-commit or after-rollback item for this model.
+    def self.__queue(tx : ::Ricord::Sessions::Tx, key : Int64, kind : UInt8, method : Int32) : Nil
+      state = tx.session.state
+      state.pending << ::Ricord::Sessions::CommitItem.new(key, kind, method, tx.depth, state.chain, ::Ricord::Sessions.model_key(TABLE), ->{{name.id}}.__after_commit(::Ricord::Sessions::Db, Int64, UInt8, Int32))
+      nil
+    end
+
+    # Runs one queued item (doc/DESIGN.md, M2 item 2, "User signatures"):
+    # create and update call the instance method on the record loaded by key,
+    # destroy the class method with the item's write and the key, rollback the
+    # class method with the session and the key (nil for a create).
+    def self.__after_commit(db : ::Ricord::Sessions::Db, key : Int64, kind : UInt8, method : Int32) : Nil | ::Ricord::Failures::Error
+      if kind == ::Ricord::CommitQueue::KIND_ROLLBACK
+        {% for m, i in rollbacks %}
+          {{name.id}}.{{m.id}}(db.session, key == -1 ? nil : key) if method == {{i}}
+        {% end %}
+        return nil
+      end
+      if kind == ::Ricord::CommitQueue::KIND_DESTROY
+        if db.is_a?(::Ricord::Sessions::Tx)
+          {% for e, i in commits %}
+            {% if e[3] %}
+              return {{name.id}}.{{e[0].id}}(db, key) if method == {{i}}
+            {% end %}
+          {% end %}
+        end
+        return nil
+      end
+      {% if commits.any? { |e| e[1] || e[2] } %}
+        record = {{name.id}}[db].find(key)
+        return record if record.is_a?(::Ricord::Failures::Failure)
+        {% for e, i in commits %}
+          {% if e[1] || e[2] %}
+            return record.{{e[0].id}} if method == {{i}}
+          {% end %}
+        {% end %}
       {% end %}
       nil
     end
@@ -722,12 +805,19 @@ pub macro model(name, &block)
       return ::Ricord::Failures::DatabaseError.new(TABLE, "destroy", "record #{id} is destroyed") if destroyed?
       record = self
       result = session.write { |tx| record.destroy_in(tx) }
+      if result.is_a?(::Ricord::Failures::AfterCommitError)
+        store.set_flag(index, ::Ricord::Storage::FLAG_DESTROYED, true)
+        return result
+      end
       return result if result.is_a?(::Ricord::Failures::Failure)
       store.set_flag(index, ::Ricord::Storage::FLAG_DESTROYED, true)
       self
     end
 
     def destroy_in(tx : ::Ricord::Sessions::Tx) : Nil | ::Ricord::Failures::DatabaseError | ::Ricord::Failures::CallbackError
+      {% for m, i in rollbacks %}
+        {{name.id}}.__queue(tx, id, ::Ricord::CommitQueue::KIND_ROLLBACK, {{i}})
+      {% end %}
       {% for m in callbacks["before_destroy"] %}
         refused = {{m.id}}
         return ::Ricord::Failures::CallbackError.new(TABLE, "destroy", "before_destroy {{m.id}}") if refused.is_a?(::Ricord::Failures::Failure)
@@ -736,6 +826,11 @@ pub macro model(name, &block)
       {% for m in callbacks["after_destroy"] %}
         refused = {{m.id}}
         return ::Ricord::Failures::CallbackError.new(TABLE, "destroy", "after_destroy {{m.id}}") if refused.is_a?(::Ricord::Failures::Failure)
+      {% end %}
+      {% for e, i in commits %}
+        {% if e[3] %}
+          {{name.id}}.__queue(tx, id, ::Ricord::CommitQueue::KIND_DESTROY, {{i}})
+        {% end %}
       {% end %}
       nil
     end

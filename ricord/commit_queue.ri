@@ -1,5 +1,7 @@
-# One queued after-commit or after-rollback item, flat (doc/DESIGN.md, M1 item 6).
-# M2 adds the run loop and the dispatch methods.
+# The kinds and the chain limit of the after-commit queue (doc/DESIGN.md, M1
+# item 6 and M2 item 2). `CommitItem` and the run loop live in
+# ricord/sessions.ri: the item's dispatch proc takes a `Db`, and imports may
+# not form a cycle.
 module ricord/commit_queue
 
 pub KIND_CREATE   = 0_u8
@@ -7,14 +9,5 @@ pub KIND_UPDATE   = 1_u8
 pub KIND_DESTROY  = 2_u8
 pub KIND_ROLLBACK = 3_u8
 
-pub struct CommitItem
-  getter key : Int64
-  getter kind : UInt8
-  getter method : Int32
-  getter depth : Int32
-  getter chain : Int32
-  getter model : Int32
-
-  def initialize(@key : Int64, @kind : UInt8, @method : Int32, @depth : Int32, @chain : Int32, @model : Int32)
-  end
-end
+# Chain depths 0-7 run; an item queued at chain depth 8 is refused.
+pub CHAIN_LIMIT = 8

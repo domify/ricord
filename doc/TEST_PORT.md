@@ -1,4 +1,4 @@
-completed: M1
+completed: M1, M2
 
 | file | verdict | target | milestone | reason | done |
 |---|---|---|---|---|---|
@@ -46,13 +46,13 @@ completed: M1
 | test/grant_attributes_w6_alias_query_test.ri | defer |  |  | attribute API extras are not in v1 | |
 | test/grant_boolean_predicates_test.ri | drop |  |  | schema tenants and replica lag tracking removed | |
 | test/grant_callbacks_abort_test.ri | port | test/callback_test.ri | M2 | a refusal at each create, update and destroy stage runs no later callback, returns CallbackError naming the callback, leaves no row (or the old row) and keeps new_record? and the unsaved changes; a refused save inside a write rolls back only its savepoint; after_rollback is M2 part B; an after_destroy refusal rolls the DELETE back (Grant kept it deleted); the refusal is the returned CallbackError, not an errors entry | x |
-| test/grant_callbacks_after_commit_timing_test.ri | port | test/after_commit_test.ri | M2 |  | |
-| test/grant_callbacks_after_save_commit_test.ri | port | test/after_commit_test.ri | M2 |  | |
+| test/grant_callbacks_after_commit_timing_test.ri | port | test/after_commit_test.ri | M2 | nothing runs inside the write, once after the outermost COMMIT, create/update/destroy forms, after_rollback (not after_commit) on a returned failure and on tx.roll_back, a lone save runs its work and no rollback item, two models in one commit, a released savepoint waits for the outer COMMIT, a savepoint rollback runs only its after_rollback, an outer rollback after a released savepoint runs both rollbacks; after_rollback is a class method with the key (nil for a create), not the record; independent: transactions and enqueue_pending_callback are not in doc/DESIGN.md | x |
+| test/grant_callbacks_after_save_commit_test.ri | port | test/after_commit_test.ri | M2 | after_save_commit on create and update, not on destroy, once with after_create_commit beside it, a create then update in one write is one create, nothing on rollback | x |
 | test/grant_callbacks_around_callbacks_test.ri | drop |  |  | around/prepend/proc callbacks are not in v1 | |
 | test/grant_callbacks_around_validation_test.ri | drop |  |  | around/prepend/proc callbacks are not in v1 | |
 | test/grant_callbacks_callbacks_test.ri | port | test/callback_test.ri | M2 | create, update and destroy callback order, a callback's error is returned (not swallowed), a before_create callback fills a column before the INSERT; the after_commit forms are M2 part B; after_initialize, after_find and after_touch are not in doc/DESIGN.md; calling a callback by hand is not in Ricord (callbacks are named methods) | x |
-| test/grant_callbacks_commit_dedup_savepoint_test.ri | port | test/after_commit_test.ri | M2 |  | |
-| test/grant_callbacks_commit_on_option_test.ri | port | test/after_commit_test.ri | M2 |  | |
+| test/grant_callbacks_commit_dedup_savepoint_test.ri | port | test/after_commit_test.ri | M2 | an update undone by a savepoint rollback runs no update item and the create runs once, after_rollback runs at the ROLLBACK TO before the commit items, a create or update then destroy resolves to a destroy, a rolled-back destroy runs after_rollback with its key, repeated updates rolled back run after_rollback once; after_rollback on: is not in doc/DESIGN.md, and a rolled-back create then update runs after_rollback twice (the create's item has key -1, so it cannot merge with the update's) | x |
+| test/grant_callbacks_commit_on_option_test.ri | port | test/after_commit_test.ri | M2 | on: [:create, :update] skips a destroy, an after_commit without on: runs for all three, repeated saves in one write run once per record and not per model, a later write runs again; after_rollback on: is not in doc/DESIGN.md | x |
 | test/grant_callbacks_lifecycle_callbacks_test.ri | port | test/callback_test.ri | M2 | valid? runs before_validation then after_validation, create/update/destroy order; block-form callbacks become method names; after_commit and after_rollback are M2 part B; after_initialize, after_find and after_touch are not in doc/DESIGN.md | x |
 | test/grant_callbacks_prepend_test.ri | drop |  |  | around/prepend/proc callbacks are not in v1 | |
 | test/grant_callbacks_proc_conditions_test.ri | drop |  |  | around/prepend/proc callbacks are not in v1 | |
@@ -159,7 +159,7 @@ completed: M1
 | test/grant_migrator_defaults_test.ri | defer |  |  | migrations are in Future Improvements | |
 | test/grant_migrator_migrator_test.ri | defer |  |  | migrations are in Future Improvements | |
 | test/grant_normalization_test.ri | defer |  |  | attribute API extras are not in v1 | |
-| test/grant_notifications_transaction_events_test.ri | port | test/after_commit_test.ri | M2 |  | |
+| test/grant_notifications_transaction_events_test.ri | defer |  |  | transaction start/commit/rollback notifications and subscriptions are not in doc/DESIGN.md; the SQL log (statements) is Ricord's only view of BEGIN/COMMIT/ROLLBACK | |
 | test/grant_perf_w6_primary_key_lookup_clauses_test.ri | port | test/group_loading_test.ri | M3 |  | |
 | test/grant_perf_w6_primary_key_lookup_keys_test.ri | port | test/group_loading_test.ri | M3 |  | |
 | test/grant_perf_w6_primary_key_lookup_scopes_test.ri | port | test/group_loading_test.ri | M3 |  | |
@@ -180,7 +180,7 @@ completed: M1
 | test/grant_persistence_primary_key_mass_assignment_test.ri | defer |  |  | new and create take no id: argument, so an explicit primary key cannot be given | |
 | test/grant_persistence_read_only_transaction_create_test.ri | defer |  |  | read-only transactions are PostgreSQL/MySQL only; the SQLite scenario needs create with an explicit id: and RecordNotSaved with a cause, neither built | |
 | test/grant_persistence_touch_options_test.ri | port | test/dirty_test.ri | M2 | a save that changes a column stamps updated_at in the same UPDATE; touch(time:), touch of named columns, increment!/decrement! with touch: and update_column are not in doc/DESIGN.md | x |
-| test/grant_persistence_transaction_lifecycle_failure_test.ri | port | test/write_test.ri | M2 | needs around_save and after_commit callbacks (M2) | |
+| test/grant_persistence_transaction_lifecycle_failure_test.ri | port | test/after_commit_test.ri | M2 | a failing after_commit item makes the write return AfterCommitError with its message and record id, the row stays committed and no write is left open; around_save is not in doc/DESIGN.md | x |
 | test/grant_persistence_transaction_lifecycle_state_test.ri | defer |  |  | store flags and values are not reset when a write rolls back; the savepoint row behaviour is already in write_test | |
 | test/grant_persistence_update_counters_test.ri | defer |  |  | update_counters (and touch) are not built | |
 | test/grant_persistence_w6_assign_unknown_key_test.ri | port | test/refused/unknown_column_key.ri | M1 | an unknown key is a build error of the typed new; assign_attributes, attributes=, alias_attribute and string-keyed hashes not in Ricord | x |
@@ -296,7 +296,7 @@ completed: M1
 | test/grant_tasks_seeds_test.ri | drop |  |  | rake-style tasks and fixtures removed | |
 | test/grant_tasks_truncate_all_test.ri | drop |  |  | rake-style tasks and fixtures removed | |
 | test/grant_test_fixtures_test.ri | drop |  |  | rake-style tasks and fixtures removed | |
-| test/grant_transaction_after_all_commit_test.ri | port | test/after_commit_test.ri | M2 |  | |
+| test/grant_transaction_after_all_commit_test.ri | defer |  |  | after_all_transactions_commit and current_transaction.after_commit (closures queued on the write) are not in doc/DESIGN.md: the queue holds flat items from model callbacks only | |
 | test/grant_transaction_atomicity_test.ri | port | test/write_test.ri | M1 | a failure or a Rollback undoes every row, a clean block keeps them, rows of several models roll back together; routing per adapter is Grant-only | x |
 | test/grant_transaction_cross_database_nesting_test.ri | drop |  |  | transaction routing and options replaced by db.write | |
 | test/grant_transaction_error_translation_test.ri | port | test/write_test.ri | M1 | a failing statement in a savepoint is a DatabaseError and the outer work commits; a constraint failure from COMMIT itself is returned and the session keeps working; read-only and serializable transactions are PostgreSQL only | x |
