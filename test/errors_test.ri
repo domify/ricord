@@ -11,7 +11,7 @@ import db/db/value::{DBValue}
 import ricord
 import sqlite/sqlite/turso
 import ricord/model::{model}
-import ricord/failures::{DatabaseError}
+import ricord/failures::{DatabaseError, Error, Failure, RecordNotFound, RecordInvalid, ScopeError, CallbackError, AfterCommitError, Rollback}
 import test/spec_helper::*
 import test/models::*
 
@@ -103,6 +103,96 @@ describe "errors" do
       Court.create(db, name: "after").or_panic
       assert Court[db].count.or_panic == 1_i64
     end
+  end
+end
+
+# Ported from grant_errors_constraint_translation_writes: a refused constraint is a
+# DatabaseError naming the constraint, and the session keeps working after it.
+# Ricord does not classify constraints into kinds; on SQLite `code` is the
+# driver's result code.
+describe "constraints" do
+  it "returns a DatabaseError for a duplicate unique key" do
+    with_db do |db|
+      original = Court.create(db, name: "dup").or_panic
+      duplicate = Court.new(db, name: "dup")
+      failed = duplicate.save
+      assert failed.is_a?(DatabaseError)
+      assert failed.as(DatabaseError).message.includes?("UNIQUE constraint failed")
+      unless database_url.starts_with?("turso:")
+        assert failed.as(DatabaseError).code & 0xff == 19, "SQLITE_CONSTRAINT"
+      end
+      assert duplicate.new_record?, "a refused insert leaves the record new"
+      assert Court[db].count.or_panic == 1_i64
+      assert Court[db].find(original.id).or_panic.name == "dup"
+      duplicate.name = "fresh"
+      duplicate.save.or_panic
+      assert duplicate.persisted?
+      assert Court[db].count.or_panic == 2_i64
+    end
+  end
+
+  it "returns a DatabaseError for a missing parent and a referenced parent" do
+    with_db do |db|
+      orphan = Case.create(db, court_id: 999, title: "x")
+      assert orphan.is_a?(DatabaseError)
+      assert orphan.as(DatabaseError).message.includes?("FOREIGN KEY constraint failed")
+      court = Court.create(db, name: "parent").or_panic
+      Case.create(db, court_id: court.id, title: "child").or_panic
+      refused = court.destroy
+      assert refused.is_a?(DatabaseError)
+      assert refused.as(DatabaseError).message.includes?("FOREIGN KEY constraint failed")
+      assert !court.destroyed?
+      assert Court[db].count.or_panic == 1_i64
+    end
+  end
+
+  it "returns a DatabaseError for NULL in a NOT NULL column" do
+    with_db do |db|
+      failed = Court.create(db, name: nil)
+      assert failed.is_a?(DatabaseError)
+      assert failed.as(DatabaseError).message.includes?("NOT NULL constraint failed")
+      assert Court[db].count.or_panic == 0_i64
+    end
+  end
+
+  it "rolls back a write whose create breaks a constraint" do
+    with_db do |db|
+      Court.create(db, name: "taken").or_panic
+      result = db.write do |tx|
+        Court.create(tx, name: "fresh").or_panic
+        Court.create(tx, name: "taken")
+      end
+      assert result.is_a?(DatabaseError)
+      assert result.as(DatabaseError).message.includes?("UNIQUE constraint failed")
+      assert Court[db].count.or_panic == 1_i64
+      assert !Court[db].where(name: "fresh").exists?.or_panic
+    end
+  end
+end
+
+# Ported from grant_errors_taxonomy: every Ricord error is a Failure with a
+# "<table> <operation>: <text>" message.
+describe "error values" do
+  it "roots every error in Failure" do
+    errors = [RecordNotFound.new("courts", 7_i64).as(Error), RecordInvalid.new("courts", "name is blank", 1),
+              ScopeError.new("courts", "account_id"), CallbackError.new("courts", "save", "check"),
+              AfterCommitError.new("courts", 1_i64, "mail failed"), DatabaseError.new("courts", "query", "boom"),
+              Rollback.new]
+    assert errors.all?(&.is_a?(Failure))
+    assert errors[0].message == "courts find: no row with id 7"
+    assert errors[6].message == "write: rolled back"
+  end
+
+  it "joins several validation failures into one message" do
+    assert RecordInvalid.new("courts", "name is blank", 3).message == "courts save: name is blank (and 2 more)"
+    assert RecordInvalid.new("courts", "name is blank", 1).message == "courts save: name is blank"
+  end
+
+  it "cuts a long message at 240 bytes with an ellipsis" do
+    message = DatabaseError.new("courts", "query", "é" * 200).message
+    assert message.bytesize <= 240
+    assert message.ends_with?("…")
+    assert message.starts_with?("courts query: é")
   end
 end
 

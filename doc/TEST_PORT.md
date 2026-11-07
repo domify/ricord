@@ -103,13 +103,13 @@ completed:
 | test/grant_connection_with_connection_pool_test.ri | drop |  |  | connection pools, roles and routing removed (one connection per session) | |
 | test/grant_connection_with_connection_test.ri | drop |  |  | pinned connections and roles removed (one connection per session) | |
 | test/grant_convenience_class_destroy_update_test.ri | defer |  |  | class-level destroy(id), delete(id), update(id) are not in Ricord; instance find + destroy is in test/crud_test.ri | |
-| test/grant_convenience_create_block_array_test.ri | port | test/crud_test.ri | M1 |  | |
-| test/grant_convenience_create_or_find_by_test.ri | port | test/crud_test.ri | M1 |  | |
-| test/grant_convenience_create_with_test.ri | port | test/crud_test.ri | M1 |  | |
-| test/grant_convenience_find_by_ids_test.ri | port | test/crud_test.ri | M1 |  | |
-| test/grant_convenience_find_or_create_by_test.ri | port | test/crud_test.ri | M1 |  | |
-| test/grant_convenience_methods_query_test.ri | port | test/crud_test.ri | M1 |  | |
-| test/grant_convenience_relation_finders_test.ri | port | test/crud_test.ri | M1 |  | |
+| test/grant_convenience_create_block_array_test.ri | defer |  |  | block form of new/create and create from an array not built and not planned in doc/DESIGN.md; its invalid-record cases need validations (M2) | |
+| test/grant_convenience_create_or_find_by_test.ri | defer |  |  | create_or_find_by not built and not planned in doc/DESIGN.md | |
+| test/grant_convenience_create_with_test.ri | defer |  |  | create_with and scope attributes not built and not planned in doc/DESIGN.md | |
+| test/grant_convenience_find_by_ids_test.ri | defer |  |  | find with several ids not built and not planned in doc/DESIGN.md (where(id: [...]) keeps no id order and reports no missing ids) | |
+| test/grant_convenience_find_or_create_by_test.ri | defer |  |  | find_or_create_by, find_or_initialize_by, first_or_create and scope attributes on create not built and not planned in doc/DESIGN.md | |
+| test/grant_convenience_methods_query_test.ri | port | test/crud_test.ri | M4 | pluck, pick and batches are M4; sole, find_sole_by, annotate, destroy_by, delete_by, touch_all and update_counters not built and not planned in doc/DESIGN.md | |
+| test/grant_convenience_relation_finders_test.ri | port | test/crud_test.ri | M1 | find_by and find on a query, nil as IS NULL, query unchanged; find_by!, find_sole_by and named scopes not built | x |
 | test/grant_converters_enum_test.ri | defer |  |  | enums are in Future Improvements | |
 | test/grant_converters_json_test.ri | port | test/json_field_test.ri | M2 |  | |
 | test/grant_converters_pg_numeric_test.ri | drop |  |  | PostgreSQL or MySQL only | |
@@ -137,17 +137,17 @@ completed:
 | test/grant_encryption_w6b_lazy_decrypt_serialization_test.ri | defer |  |  | encryption is in Future Improvements | |
 | test/grant_encryption_w6b_lazy_decrypt_test.ri | defer |  |  | encryption is in Future Improvements | |
 | test/grant_enum_attributes_test.ri | defer |  |  | enums are in Future Improvements | |
-| test/grant_error_error_test.ri | port | test/crud_test.ri | M1 |  | |
-| test/grant_errors_constraint_translation_classification_test.ri | port | test/crud_test.ri | M1 |  | |
-| test/grant_errors_constraint_translation_contention_test.ri | port | test/crud_test.ri | M1 |  | |
+| test/grant_error_error_test.ri | port | test/validation_test.ri | M2 | validation error entries are M2 | |
+| test/grant_errors_constraint_translation_classification_test.ri | defer |  |  | Ricord does not classify database errors into kinds; DatabaseError carries the driver code only | |
+| test/grant_errors_constraint_translation_contention_test.ri | defer |  |  | pools dropped; lock-wait classification not built (a busy database is a plain DatabaseError) | |
 | test/grant_errors_constraint_translation_pg_test.ri | drop |  |  | PostgreSQL or MySQL only | |
-| test/grant_errors_constraint_translation_test.ri | port | test/crud_test.ri | M1 |  | |
-| test/grant_errors_constraint_translation_writes_test.ri | port | test/crud_test.ri | M1 |  | |
-| test/grant_errors_errors_api_test.ri | port | test/crud_test.ri | M1 |  | |
-| test/grant_errors_statement_invalid_test.ri | port | test/crud_test.ri | M1 |  | |
-| test/grant_errors_taxonomy_test.ri | port | test/crud_test.ri | M1 |  | |
-| test/grant_exceptions_record_invalid_test.ri | port | test/crud_test.ri | M1 |  | |
-| test/grant_exceptions_record_not_destroyed_test.ri | port | test/crud_test.ri | M1 |  | |
+| test/grant_errors_constraint_translation_test.ri | drop |  |  | PostgreSQL or MySQL error translation and pool errors | |
+| test/grant_errors_constraint_translation_writes_test.ri | port | test/errors_test.ri | M1 | unique, foreign key and NOT NULL failures as DatabaseError, write rollback, record stays new; no kinds such as RecordNotUnique, no sql/binds fields; code checked on SQLite only (Turso errors carry -1) | x |
+| test/grant_errors_errors_api_test.ri | port | test/validation_test.ri | M2 | record.errors and validations are M2 | |
+| test/grant_errors_statement_invalid_test.ri | drop |  |  | DatabaseError has no sql or binds fields by design (text extras live in the message); binds kept out of the message is covered in test/errors_test.ri | |
+| test/grant_errors_taxonomy_test.ri | port | test/errors_test.ri | M1 | every error is a Failure, message format, RecordInvalid joining, 240-byte cut; class hierarchy and historical aliases dropped (flat structs); save!/create! raising RecordInvalid is M2 | x |
+| test/grant_exceptions_record_invalid_test.ri | port | test/validation_test.ri | M2 | RecordNotSaved with the record's validation messages needs validations (M2) | |
+| test/grant_exceptions_record_not_destroyed_test.ri | port | test/callback_test.ri | M2 | a destroy halted by a callback (CallbackError) needs callbacks (M2) | |
 | test/grant_fiber_connection_context_test.ri | drop |  |  | driver prepares each statement; no fibers in ris | |
 | test/grant_integrators_find_or_test.ri | defer |  |  | attribute API extras are not in v1 | |
 | test/grant_locking_lock_clause_test.ri | defer |  |  | locking is not in v1 (SQLite writes are serialized) | |
@@ -164,12 +164,12 @@ completed:
 | test/grant_perf_w6_primary_key_lookup_keys_test.ri | port | test/group_loading_test.ri | M3 |  | |
 | test/grant_perf_w6_primary_key_lookup_scopes_test.ri | port | test/group_loading_test.ri | M3 |  | |
 | test/grant_perf_w6_primary_key_lookup_test.ri | port | test/group_loading_test.ri | M3 |  | |
-| test/grant_perf_w6_sqlite_time_parse_test.ri | port | test/types_test.ri | M1 |  | |
+| test/grant_perf_w6_sqlite_time_parse_test.ri | port | test/types_test.ri | M1 | runs on both engines; the save round trip is the existing Time test | x |
 | test/grant_perf_w6_statement_count_create_find_test.ri | port | test/group_loading_test.ri | M3 |  | |
 | test/grant_perf_w6_statement_count_test.ri | port | test/group_loading_test.ri | M3 |  | |
 | test/grant_perf_w6_statement_count_writes_test.ri | port | test/group_loading_test.ri | M3 |  | |
-| test/grant_persistence_destroyed_guard_test.ri | port | test/crud_test.ri | M1 |  | |
-| test/grant_persistence_direct_persistence_test.ri | port | test/crud_test.ri | M1 |  | |
+| test/grant_persistence_destroyed_guard_test.ri | port | test/crud_test.ri | M1 | in-memory reads after destroy, no row written back, live records unaffected; the RecordDestroyedError guard is not built (save of a destroyed record runs an UPDATE that changes no row); frozen?, update*, touch and increment not built | x |
+| test/grant_persistence_direct_persistence_test.ri | defer |  |  | update_columns, increment!, touch and read-only attributes not built and not planned in doc/DESIGN.md; per-column dirty API is M2 | |
 | test/grant_persistence_dirty_tracking_api_test.ri | port | test/dirty_test.ri | M2 |  | |
 | test/grant_persistence_dup_clone_test.ri | port | test/crud_test.ri | M1 |  | |
 | test/grant_persistence_equality_test.ri | port | test/crud_test.ri | M1 |  | |

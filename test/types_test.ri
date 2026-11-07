@@ -3,6 +3,8 @@ module test/types_test
 
 import std/time::{Time}
 import std/slice::{Bytes}
+import db/db/value::{DBValue}
+import ricord/failures::{DatabaseError}
 import db/db/spec::{describe, it}
 import test/spec_helper::*
 import test/models::*
@@ -28,6 +30,37 @@ describe "types" do
       court = Court.create(db, name: "t", opened_at: at).or_panic
       read = Court[db].find(court.id).or_panic.opened_at
       assert read == at, "read #{read.inspect}"
+    end
+  end
+end
+
+# Ported from grant_perf_w6_sqlite_time_parse; runs on both engines.
+describe "stored time text" do
+  it "reads datetime text at every precision" do
+    with_db do |db|
+      texts = ["2026-10-01 12:34:56", "2026-10-01 12:34:56.1", "2026-10-01 12:34:56.123",
+               "2026-10-01 12:34:56.123456", "2026-10-01 12:34:56.123456789",
+               "2026-02-28 23:59:59.999999", "2024-02-29 00:00:00", "1970-01-01 00:00:00",
+               "0001-01-01 00:00:00"]
+      texts.each do |text|
+        db.exec("DELETE FROM courts").or_panic
+        db.exec("INSERT INTO courts (name, opened_at) VALUES ('t', ?)", [text.as(DBValue)]).or_panic
+        court = Court[db].first.or_panic
+        assert !court.nil? && court.opened_at == Time.parse_rfc3339("#{text}Z"), "read #{text}"
+      end
+      db.exec("DELETE FROM courts").or_panic
+      db.exec("INSERT INTO courts (name, opened_at) VALUES ('t', '2026-10-01 12:34:56.123456789')").or_panic
+      court = Court[db].first.or_panic
+      at = court.nil? ? nil : court.opened_at
+      assert !at.nil? && at.nanosecond == 123_456_789, "every fractional digit is kept"
+    end
+  end
+
+  it "returns a DatabaseError for text that is no time" do
+    with_db do |db|
+      db.exec("INSERT INTO courts (name, opened_at) VALUES ('t', '2026-13-45 99:99:99')").or_panic
+      assert Court[db].first.is_a?(DatabaseError)
+      assert Court[db].to_a.is_a?(DatabaseError)
     end
   end
 end

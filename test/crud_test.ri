@@ -96,3 +96,40 @@ describe "crud" do
     end
   end
 end
+
+# Ported from grant_convenience_relation_finders and grant_persistence_destroyed_guard.
+describe "finders and destroyed records" do
+  it "finds within a query and leaves the query unchanged" do
+    with_db do |db|
+      Court.create(db, name: "a", rank: 1).or_panic
+      Court.create(db, name: "b", rank: 1).or_panic
+      c = Court.create(db, name: "c", rank: 2).or_panic
+      ranked = Court[db].where(rank: 1)
+      found = ranked.find_by(name: "b").or_panic
+      assert !found.nil? && found.name == "b"
+      assert ranked.find_by(name: "c").or_panic.nil?, "find_by narrows the query"
+      assert !ranked.find_by(score: nil).or_panic.nil?, "nil matches IS NULL"
+      assert ranked.find(c.id).is_a?(RecordNotFound), "find keeps the query's conditions"
+      assert ranked.count.or_panic == 2_i64, "the query keeps only its own conditions"
+      top = Court[db].find_by(name: "a").or_panic
+      assert !top.nil? && top.rank == 1_i64
+    end
+  end
+
+  it "keeps a destroyed record's values and writes no row back" do
+    with_db do |db|
+      item = Court.create(db, name: "gone", rank: 1).or_panic
+      item.destroy.or_panic
+      item.rank = 2
+      assert item.name == "gone"
+      assert item.rank == 2_i64
+      item.save
+      assert Court[db].count.or_panic == 0_i64
+      assert Court[db].find(item.id).is_a?(RecordNotFound)
+      live = Court.create(db, name: "alive").or_panic
+      live.name = "still alive"
+      live.save.or_panic
+      assert Court[db].find(live.id).or_panic.name == "still alive"
+    end
+  end
+end
