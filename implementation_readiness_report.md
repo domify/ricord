@@ -102,7 +102,7 @@ exists; `port/` has 28 tracked files; `test/grant_tape_model_test.ri` imports
 ### [F6] CD-8: `examples/tape_web/ris.mod` breaks in M0
 * **Edit:** M0 excludes `examples/` from `bin/test` until M5, and item 7
   removes the example's pg `replace` line and renames its require to
-  `github.com/priit/ricord`.
+  `github.com/domify/ricord`.
 
 ### [F7] ST-2, IR-Nit, CD-13: `.ris-version` format and the compiler path
 * **Edit:** item 8 defines key=value lines: `ris_path=~/contribute/ris1`

@@ -1,4 +1,4 @@
-module github.com/priit/ricord
+module github.com/domify/ricord
 
 require github.com/domify/db v0.3.1 as db
 require github.com/domify/sqlite v0.2.0 as sqlite

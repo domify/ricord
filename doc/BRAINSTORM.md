@@ -346,7 +346,7 @@ These supersede the matching items above.
   propagates them. This replaces the `_strict` rule of `doc/NAMING.md` for
   the new Grant. `!` stays out of names (iyi III.1.7).
 * **Name: Ricord** (ris + record). The namespace is `Ricord::` and the module is
-  `github.com/priit/ricord`. It is not a port of Crystal Grant: the
+  `github.com/domify/ricord`. It is not a port of Crystal Grant: the
   vocabulary comes from Rails, the write core from Campfire, and the code is
   new. Grant is credited as an inspiration.
 * **Columns are declared one way: `col :name, :type, **options`**, in Rails

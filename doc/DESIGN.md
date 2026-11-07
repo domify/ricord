@@ -922,7 +922,7 @@ probe that later milestones rely on passing or recorded.
 #### 2. Rename the project to Ricord (Modify)
 
 *   **Type / Scope**: Module name, directories.
-*   **Proposed Changes**: `ris.mod` declares `module github.com/priit/ricord`; new code lives under
+*   **Proposed Changes**: `ris.mod` declares `module github.com/domify/ricord`; new code lives under
     `ricord/`; the root file is `ricord.ri`; the namespace is `Ricord::`. The README credits Grant,
     Campfire and Rails.
 
@@ -988,10 +988,10 @@ probe that later milestones rely on passing or recorded.
     module tape_web
 
     require github.com/domify/web v0.1.0 as web
-    require github.com/priit/ricord v0.0.0 as ricord
+    require github.com/domify/ricord v0.0.0 as ricord
 
     replace github.com/domify/web => ../../../web
-    replace github.com/priit/ricord => ../..
+    replace github.com/domify/ricord => ../..
     replace github.com/domify/db => ../../../db
     replace github.com/domify/sqlite => ../../../sqlite
     ```
