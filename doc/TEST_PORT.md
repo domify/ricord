@@ -222,40 +222,40 @@ completed:
 | test/grant_query_query_parity_test.ri | defer |  |  | ids, unscope, association joins, annotate, find_each and update_all are not built | |
 | test/grant_query_query_regressions_test.ri | port | test/crud_test.ri | M1 | Q-6 exclusive range end and Q-7 OR range grouped with AND (empty IN is in crud); Q-1..Q-5 and Q-8..Q-15 need pluck, ids, delete_all/update_all, where.not_in, nil in an IN list, raw bind arrays, subqueries, group, joins or batching | x |
 | test/grant_query_relation_components_test.ri | defer |  |  | query feature not in v1 | |
-| test/grant_query_relation_load_test.ri | port | test/crud_test.ri | M1 |  | |
+| test/grant_query_relation_load_test.ri | port | test/crud_test.ri | M1 | count bounded by limit/offset, empty?/any? as one LIMIT 1 probe, last; a Query is a value with no loaded state, so load/loaded?/records/reset/reload, memoized reads, size, many?/one?/none?, second, first(n)/last(n), none and where_in_place are not in Ricord | x |
 | test/grant_query_rewhere_reorder_test.ri | defer |  |  | query feature not in v1 | |
 | test/grant_query_scoping_block_test.ri | defer |  |  | query feature not in v1 | |
-| test/grant_query_select_order_expressions_test.ri | port | test/crud_test.ri | M1 |  | |
+| test/grant_query_select_order_expressions_test.ri | defer |  |  | select expressions, group, raw ORDER BY expressions and NULLS FIRST/LAST are not in Ricord's query API (order takes column symbols only); its joined-column cases need joins (M4) | |
 | test/grant_query_unscope_where_column_test.ri | defer |  |  | query feature not in v1 | |
 | test/grant_query_w6_merge_order_test.ri | defer |  |  | query feature not in v1 | |
-| test/grant_query_w6_reorder_sql_test.ri | port | test/crud_test.ri | M1 |  | |
-| test/grant_query_where_nested_hash_test.ri | port | test/crud_test.ri | M1 |  | |
-| test/grant_query_where_not_or_and_not_test.ri | port | test/crud_test.ri | M1 |  | |
-| test/grant_query_where_not_or_and_relations_test.ri | port | test/crud_test.ri | M1 |  | |
-| test/grant_query_where_not_or_and_test.ri | port | test/crud_test.ri | M1 |  | |
-| test/grant_query_where_range_test.ri | port | test/crud_test.ri | M1 |  | |
-| test/grant_querying_all_test.ri | port | test/crud_test.ri | M1 |  | |
-| test/grant_querying_count_test.ri | port | test/crud_test.ri | M1 |  | |
-| test/grant_querying_enumerable_baseline_test.ri | port | test/crud_test.ri | M1 |  | |
-| test/grant_querying_enumerable_test.ri | port | test/crud_test.ri | M1 |  | |
-| test/grant_querying_exists_test.ri | port | test/crud_test.ri | M1 |  | |
-| test/grant_querying_find_by_test.ri | port | test/crud_test.ri | M1 |  | |
+| test/grant_query_w6_reorder_sql_test.ri | defer |  |  | reorder, reselect, regroup and reverse_order are not in Ricord's query API | |
+| test/grant_query_where_nested_hash_test.ri | port | test/crud_test.ri | M4 | a nested hash on a joined table needs joins (M4); record values for a belongs_to need associations (M3) | |
+| test/grant_query_where_not_or_and_not_test.ri | defer |  |  | where.not is not in Ricord's query API | |
+| test/grant_query_where_not_or_and_relations_test.ri | defer |  |  | or/and of two queries is not in Ricord's query API; the keyword and string or_where forms are in test/crud_test.ri | |
+| test/grant_query_where_not_or_and_test.ri | port | test/crud_test.ri | M4 | qualifying own columns against later joins needs joins (M4) | |
+| test/grant_query_where_range_test.ri | port | test/crud_test.ri | M1 | closed, exclusive, beginless, endless and nil..nil ranges on Int64 and Float64 with where, or_where and chaining; Time and String ranges do not build (ris refuses a Range holding a tape type without @[OnTape]); ranges inside an array and where.between not in Ricord | x |
+| test/grant_querying_all_test.ri | port | test/crud_test.ri | M1 | all, and a raw where for the Model.all(sql, binds) form | x |
+| test/grant_querying_count_test.ri | port | test/crud_test.ri | M1 | Int64 counts, 0 for none, a value past Int32::MAX through db.scalar; grouped count needs group_by (not in Ricord); Result.integer_count is Grant-internal | x |
+| test/grant_querying_enumerable_baseline_test.ri | port | test/crud_test.ri | M1 | to_a then Array methods, count, any?, first, exists?, chaining; each/map/reject on a query need batched each (M4); size is count | x |
+| test/grant_querying_enumerable_test.ri | port | test/each_test.ri | M4 | a Query is not Enumerable: block forms of each/map/select/count/any? and the rest on a query need batched each (M4) | |
+| test/grant_querying_exists_test.ri | port | test/crud_test.ri | M1 | exists? on where(id:), several keys and nil; exists?(id)/exists?(hash) shorthands, String primary keys and default_scope not in Ricord | x |
+| test/grant_querying_find_by_test.ri | port | test/crud_test.ri | M1 | a string, several keys, nil, a keyword column name (backtick quoted); find_by_strict and hash arguments not in Ricord | x |
 | test/grant_querying_find_each_test.ri | port | test/each_test.ri | M4 |  | |
 | test/grant_querying_find_in_batches_test.ri | port | test/each_test.ri | M4 |  | |
-| test/grant_querying_find_test.ri | port | test/crud_test.ri | M1 |  | |
-| test/grant_querying_first_test.ri | port | test/crud_test.ri | M1 |  | |
-| test/grant_querying_from_rs_test.ri | port | test/crud_test.ri | M1 |  | |
-| test/grant_querying_or_not_block_params_test.ri | port | test/crud_test.ri | M1 |  | |
-| test/grant_querying_passthrough_test.ri | port | test/crud_test.ri | M1 |  | |
-| test/grant_querying_query_builder_test.ri | port | test/crud_test.ri | M1 |  | |
-| test/grant_querying_relation_calculations_test.ri | port | test/crud_test.ri | M1 |  | |
-| test/grant_querying_reload_test.ri | port | test/crud_test.ri | M1 |  | |
+| test/grant_querying_find_test.ri | port | test/crud_test.ri | M1 | find by id, persisted state, RecordNotFound (not nil) for a missing id; custom primary keys and namespaced models not in Ricord | x |
+| test/grant_querying_first_test.ri | port | test/crud_test.ri | M1 | first by id, by an explicit order, nil for no row; the first(sql) and first_strict forms are order/where then first | x |
+| test/grant_querying_from_rs_test.ri | defer |  |  | building a record from an arbitrary result set (named or reordered columns) is not in Ricord; read_row reads COLUMNS order only | |
+| test/grant_querying_or_not_block_params_test.ri | port | test/crud_test.ri | M1 | OR of grouped AND conditions through or_where with several keys; the block forms of or_where and not are not in Ricord (no where.not) | x |
+| test/grant_querying_passthrough_test.ri | port | test/crud_test.ri | M1 | db.query and db.scalar | x |
+| test/grant_querying_query_builder_test.ri | port | test/crud_test.ri | M1 | IN on id, string, number and bool columns with where and or_where, exists? on where; and_where is where | x |
+| test/grant_querying_relation_calculations_test.ri | defer |  |  | sum/avg/min/max are not in Ricord | |
+| test/grant_querying_reload_test.ri | port | test/crud_test.ri | M1 | reload in place, unsaved changes dropped, RecordNotFound after destroy; changes/previous_changes are M2 | x |
 | test/grant_querying_select_projection_test.ri | port | test/pluck_test.ri | M4 |  | |
-| test/grant_sanitization_test.ri | port | test/crud_test.ri | M1 |  | |
+| test/grant_sanitization_test.ri | defer |  |  | Ricord binds every value and has no quote/sanitize API | |
 | test/grant_schema_advisory_lock_test.ri | defer |  |  | migrations and schema tooling are in Future Improvements | |
 | test/grant_schema_alter_table_test.ri | defer |  |  | migrations and schema tooling are in Future Improvements | |
-| test/grant_schema_check_unique_constraints_test.ri | port | test/schema_test.ri | M1 |  | |
-| test/grant_schema_column_defaults_test.ri | port | test/schema_test.ri | M1 |  | |
+| test/grant_schema_check_unique_constraints_test.ri | port | test/schema_test.ri | M1 | check_constraint (named and unnamed) and a two-column unique index in create_table, enforced on both engines; adding or removing constraints on an existing table, introspection and PostgreSQL/MySQL forms not in Ricord | x |
+| test/grant_schema_column_defaults_test.ri | port | test/schema_test.ri | M1 | string (quote escaped), integer and boolean literal defaults in the DDL and applied by the database; default_sql expressions and change_column_default not in Ricord | x |
 | test/grant_schema_comments_test.ri | defer |  |  | migrations and schema tooling are in Future Improvements | |
 | test/grant_schema_composite_pk_create_test.ri | port | test/schema_test.ri | M1 |  | |
 | test/grant_schema_create_table_test.ri | port | test/schema_test.ri | M1 |  | |

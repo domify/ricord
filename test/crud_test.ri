@@ -2,6 +2,9 @@
 module test/crud_test
 
 import db/db/spec::{describe, it}
+import std/time::{Time}
+import ricord
+import ricord/model::{model}
 import ricord/failures::{RecordNotFound, DatabaseError}
 import test/spec_helper::*
 import test/models::*
@@ -234,6 +237,261 @@ describe "public api return types" do
       3.times { |i| Court.create(db, name: "c#{i}").or_panic }
       assert Court[db].offset(2).exists?.or_panic
       assert !Court[db].offset(3).exists?.or_panic
+    end
+  end
+end
+
+# A column whose name is an SQL keyword, for grant_querying_find_by.
+model Keyword do
+  table :keywords
+  col :all, :string
+end
+
+# Ported from grant_query_relation_load, grant_querying_count,
+# grant_querying_enumerable_baseline and grant_querying_passthrough.
+describe "counting and probing" do
+  it "counts only the rows a limit or offset returns" do
+    with_db do |db|
+      ["a", "b", "c", "d", "e"].each { |n| Court.create(db, name: n).or_panic }
+      query = Court[db].where("name != ?", "zzz")
+      assert query.limit(2).count.or_panic == 2_i64
+      assert query.limit(2).offset(1).count.or_panic == 2_i64
+      assert query.limit(10).offset(3).count.or_panic == 2_i64
+      assert query.offset(4).count.or_panic == 1_i64
+      assert query.offset(9).count.or_panic == 0_i64
+      assert query.order(:name).limit(3).count.or_panic == 3_i64
+      assert query.count.or_panic == 5_i64
+      assert db.statements.last.upcase.includes?("COUNT(*)")
+    end
+  end
+
+  it "answers any? and empty? with a LIMIT 1 probe" do
+    with_db do |db|
+      ["a", "b", "c"].each { |n| Court.create(db, name: n).or_panic }
+      query = Court[db].where("name != ?", "zzz")
+      before = db.statements.size
+      assert !query.empty?.or_panic
+      selects = 0
+      (before...db.statements.size).each { |i| selects += 1 if db.statements[i].starts_with?("SELECT") }
+      assert selects == 1, "one probe query"
+      assert db.statements.last.includes?("LIMIT 1")
+      assert query.any?.or_panic
+      assert !Court[db].where(name: "nonexistent").any?.or_panic
+      assert Court[db].where(name: "nonexistent").empty?.or_panic
+    end
+  end
+
+  it "reads first and last in the query's order" do
+    with_db do |db|
+      ["b", "a", "c"].each { |n| Court.create(db, name: n).or_panic }
+      by_id = Court[db].last.or_panic
+      assert !by_id.nil? && by_id.name == "c"
+      assert db.statements.last.includes?("ORDER BY `id` DESC LIMIT 1")
+      by_name = Court[db].order(:name).last.or_panic
+      assert !by_name.nil? && by_name.name == "c"
+      by_name_desc = Court[db].order(name: :desc).last.or_panic
+      assert !by_name_desc.nil? && by_name_desc.name == "a"
+      assert db.statements.last.includes?("ORDER BY `name` LIMIT 1")
+      limited = Court[db].order(:name).limit(2).last.or_panic
+      assert !limited.nil? && limited.name == "b", "last of a limited query is its last row"
+      assert Court[db].where(name: "z").last.or_panic.nil?
+    end
+  end
+
+  it "returns counts as Int64, 0 for none and past Int32::MAX" do
+    with_db do |db|
+      assert Court[db].count.or_panic == 0_i64
+      Court.create(db, name: "count probe").or_panic
+      assert Court[db].count.or_panic.is_a?(Int64)
+      assert Court[db].where(name: "count probe").count.or_panic.is_a?(Int64)
+      before = Court[db].count.or_panic
+      2.times { |i| Court.create(db, name: "model_#{i}").or_panic }
+      assert Court[db].count.or_panic - before == 2_i64
+      assert db.scalar("SELECT 2147483648", Int64).or_panic == 2_147_483_648_i64
+    end
+  end
+
+  it "passes raw query and scalar through to the driver" do
+    with_db do |db|
+      name = db.query("SELECT `name` FROM `courts`") { |rs| rs.column_name(0) }.or_panic
+      assert name == "name"
+      assert db.scalar("SELECT count(*) FROM `courts`", Int64).or_panic == 0_i64
+    end
+  end
+
+  it "works with Array methods after to_a" do
+    with_db do |db|
+      ["alice", "bob", "carol", "dave", "eve"].each { |n| Court.create(db, name: n).or_panic }
+      query = Court[db].where(name: ["alice", "bob", "carol"])
+      assert query.to_a.or_panic.size == 3
+      assert query.count.or_panic == 3_i64
+      picked = query.to_a.or_panic.select { |c| c.name == "alice" || c.name == "bob" }
+      assert picked.size == 2
+      assert query.to_a.or_panic.count { |c| c.name == "alice" } == 1
+      assert query.to_a.or_panic.any? { |c| c.name == "carol" }
+      assert query.to_a.or_panic.min_by(&.name).name == "alice"
+      assert query.to_a.or_panic.max_by(&.name).name == "carol"
+      assert Court[db].where(name: ["carol", "alice", "bob"]).to_a.or_panic.map(&.name).sorted == ["alice", "bob", "carol"]
+      assert query.to_a.or_panic.reject { |c| c.name == "carol" }.size == 2
+      first = Court[db].where(name: "alice").first.or_panic
+      assert !first.nil? && first.name == "alice"
+      chained = Court[db].where(name: ["alice", "bob", "carol"]).order(name: :asc).limit(2).to_a.or_panic
+      assert chained.size == 2 && chained[0].name == "alice"
+    end
+  end
+end
+
+private def labels(q : Court::Query) : Array(String)
+  q.order(:rank).to_a.or_panic.map(&.name)
+end
+
+private def ids_desc(q : Court::Query) : Array(Int64)
+  q.order(id: :desc).to_a.or_panic.map(&.id)
+end
+
+# Ported from grant_query_where_range, grant_querying_query_builder,
+# grant_querying_or_not_block_params, grant_querying_exists and grant_querying_all.
+describe "where forms" do
+  it "filters on closed, exclusive and open ranges of every type" do
+    with_db do |db|
+      (1..5).each do |r|
+        Court.create(db, name: "m#{r}", rank: r, score: r * 1.5, opened_at: Time.utc(2024, r, 1)).or_panic
+      end
+      assert labels(Court[db].where(rank: 2_i64..4_i64)) == ["m2", "m3", "m4"]
+      assert labels(Court[db].where(rank: 2_i64...4_i64)) == ["m2", "m3"]
+      assert labels(Court[db].where(rank: ..3_i64)) == ["m1", "m2", "m3"]
+      assert db.statements.last.includes?("`rank` <= ?")
+      assert labels(Court[db].where(rank: ...3_i64)) == ["m1", "m2"]
+      assert db.statements.last.includes?("`rank` < ?")
+      assert labels(Court[db].where(rank: 4_i64..)) == ["m4", "m5"]
+      assert labels(Court[db].where(rank: 4_i64...)) == ["m4", "m5"]
+      assert !db.statements.last.includes?("<")
+      assert Court[db].where(rank: (nil..nil)).count.or_panic == 5_i64
+      assert labels(Court[db].where(score: 3.0..6.0)) == ["m2", "m3", "m4"]
+      assert labels(Court[db].where(score: ..3.0)) == ["m1", "m2"]
+      assert labels(Court[db].where(score: 6.0..)) == ["m4", "m5"]
+      assert labels(Court[db].where(rank: 2_i64..).where(score: ..6.0)) == ["m2", "m3", "m4"]
+      assert labels(Court[db].where(rank: 1_i64..).where(rank: ..2_i64)) == ["m1", "m2"]
+      assert labels(Court[db].where(name: "m1").or_where(rank: 5_i64..)) == ["m1", "m5"]
+      assert labels(Court[db].where(name: "m1").or_where(rank: ..2_i64)) == ["m1", "m2"]
+      assert labels(Court[db].where(name: "m1").or_where(rank: 4_i64...5_i64)) == ["m1", "m4"]
+      assert labels(Court[db].where(name: "m3").or_where(rank: 4_i64..5_i64).where(score: ..100.0)) == ["m3", "m4", "m5"]
+    end
+  end
+
+  it "queries IN lists of ids, strings, numbers and booleans" do
+    with_db do |db|
+      one = Court.create(db, name: "one", rank: 99).or_panic
+      two = Court.create(db, name: "two", rank: -4, active: false).or_panic
+      assert ids_desc(Court[db].where(id: [one.id, two.id])) == [two.id, one.id]
+      assert ids_desc(Court[db].where(name: ["one", "two"]).where(id: [one.id, two.id])) == [two.id, one.id]
+      assert ids_desc(Court[db].where(id: [1001_i64, 1002_i64]).or_where(name: ["one", "two"])) == [two.id, one.id]
+      assert ids_desc(Court[db].where(name: ["one", "two"]).or_where(id: [1001_i64, 1002_i64])) == [two.id, one.id]
+      assert ids_desc(Court[db].where(id: [1001_i64, 1002_i64])).empty?
+      assert ids_desc(Court[db].where(rank: [99_i64, -4_i64])) == [two.id, one.id]
+      assert ids_desc(Court[db].where(active: [false])) == [two.id]
+      assert Court[db].where(id: one.id).exists?.or_panic
+      assert Court[db].where(name: "one", id: one.id).exists?.or_panic
+      assert !Court[db].where(id: 234567).exists?.or_panic
+      assert !Court[db].where(name: "other", id: one.id).exists?.or_panic
+      assert !Court[db].where(rank: nil, id: one.id).exists?.or_panic
+      blank = Court.create(db, name: "blank").or_panic
+      assert Court[db].where(rank: nil, id: blank.id).exists?.or_panic
+    end
+  end
+
+  it "groups an or_where with several keys as one AND clause" do
+    with_db do |db|
+      Court.create(db, name: "alice", rank: 30).or_panic
+      Court.create(db, name: "alice2", rank: 99).or_panic
+      Court.create(db, name: "carol", rank: 30).or_panic
+      Court.create(db, name: "dave", rank: 4).or_panic
+      found = Court[db].where(name: "carol").or_where(name: "alice", rank: 30).to_a.or_panic.map(&.name).sorted
+      assert found == ["alice", "carol"]
+      assert db.statements.any?(&.includes?(") OR (`name` = ? AND `rank` = ?)"))
+      three = Court[db].where(name: "dave").or_where(name: "alice", rank: 30).or_where(name: "carol", rank: 30).count.or_panic
+      assert three == 3_i64
+      one = Court[db].where(name: "dave").or_where(name: "alice2", rank: 30).count.or_panic
+      assert one == 1_i64, "both keys must match inside the group"
+    end
+  end
+
+  it "lists all records and filters with a raw condition" do
+    with_db do |db|
+      made = (0...100).map { |i| Court.create(db, name: "model_#{i}").or_panic.id }
+      all = Court[db].all.or_panic
+      assert all.size == 100
+      assert all.map(&.id).sorted == made
+      Court.create(db, name: "findable model").or_panic
+      found = Court[db].where("name = ?", "findable model").all.or_panic
+      assert found.size == 1 && found[0].name == "findable model"
+    end
+  end
+end
+
+# Ported from grant_querying_find, grant_querying_find_by, grant_querying_first
+# and grant_querying_reload.
+describe "finders and reload" do
+  it "finds by id and marks the record persisted" do
+    with_db do |db|
+      court = Court.create(db, name: "Test Comment").or_panic
+      found = Court[db].find(court.id).or_panic
+      assert found.id == court.id
+      assert !found.new_record?
+      assert found.persisted?
+      missing = Court[db].find(0)
+      assert missing.is_a?(RecordNotFound)
+      assert missing.as(RecordNotFound).message.includes?("no row with id 0")
+    end
+  end
+
+  it "finds by strings, several keys, nil and keyword columns" do
+    with_db do |db|
+      Keyword.create_table(db).or_panic
+      robinson = Court.create(db, name: "robinson").or_panic
+      found = Court[db].find_by(name: "robinson").or_panic
+      assert !found.nil? && found.id == robinson.id
+      Court.create(db, name: "review1", rank: 2).or_panic
+      expected = Court.create(db, name: "review3", rank: 10).or_panic
+      by_two = Court[db].find_by(name: "review3", rank: 10).or_panic
+      assert !by_two.nil? && by_two.id == expected.id
+      assert Court[db].find_by(name: "review1", rank: 20).or_panic.nil?
+      by_nil = Court[db].find_by(rank: nil).or_panic
+      assert !by_nil.nil? && by_nil.id == robinson.id
+      word = Keyword.create(db, all: "robinson").or_panic
+      by_word = Keyword[db].find_by(all: "robinson").or_panic
+      assert !by_word.nil? && by_word.id == word.id
+      assert db.statements.any?(&.includes?("WHERE (`all` = ?)"))
+      assert Court[db].find_by(name: "xxx").or_panic.nil?
+    end
+  end
+
+  it "reads first by id, in a given order, or nil" do
+    with_db do |db|
+      first = Court.create(db, name: "Test 1").or_panic
+      second = Court.create(db, name: "Test 2").or_panic
+      found = Court[db].first.or_panic
+      assert !found.nil? && found.id == first.id
+      desc = Court[db].order(id: :desc).first.or_panic
+      assert !desc.nil? && desc.id == second.id
+      assert Court[db].where("name = 'Test 3'").first.or_panic.nil?
+    end
+  end
+
+  it "reloads in place, drops unsaved changes and reports a missing row" do
+    with_db do |db|
+      court = Court.create(db, name: "Original").or_panic
+      court.name = "Unsaved change"
+      assert court.changed?
+      other = Court[db].find(court.id).or_panic
+      other.name = "Changed elsewhere"
+      other.save.or_panic
+      reloaded = court.reload.or_panic
+      assert reloaded.index == court.index
+      assert court.name == "Changed elsewhere"
+      assert !court.changed?
+      court.destroy.or_panic
+      assert court.reload.is_a?(RecordNotFound)
     end
   end
 end

@@ -2,6 +2,8 @@
 module test/schema_test
 
 import db/db/spec::{describe, it}
+import ricord
+import ricord/model::{model}
 import ricord/failures::{DatabaseError}
 import test/spec_helper::*
 import test/models::*
@@ -47,6 +49,54 @@ describe "schema" do
       Case[db].where(court_id: court.id).to_a.or_panic.each(&.destroy.or_panic)
       account.destroy.or_panic
       assert Court[db].count.or_panic == 0_i64, "cascade"
+    end
+  end
+end
+
+# Checks, a two-column unique index and literal defaults, for
+# grant_schema_check_unique_constraints and grant_schema_column_defaults.
+model Product do
+  table :products
+  col :price, :integer
+  col :page_id, :integer, null: true
+  col :position, :integer, null: true
+  col :role, :string, default: "it's"
+  col :qty, :integer, default: 5
+  col :on, :boolean, default: false
+  check_constraint "price > 0", name: "price_check"
+  check_constraint "price < 1000"
+  index [:position, :page_id], unique: true
+end
+
+describe "constraints and defaults" do
+  it "declares checks and a unique index in create_table and enforces them" do
+    with_db do |db|
+      Product.create_table(db).or_panic
+      ddl = db.statements.find(&.starts_with?("CREATE TABLE IF NOT EXISTS `products`")) || ""
+      assert ddl.includes?(", CONSTRAINT `price_check` CHECK (price > 0)")
+      assert ddl.includes?(", CHECK (price < 1000)")
+      assert db.statements.any?(&.includes?("CREATE UNIQUE INDEX IF NOT EXISTS `index_products_on_position_page_id` ON `products` (`position`, `page_id`)"))
+      Product.create(db, price: 5, page_id: 1, position: 1).or_panic
+      assert Product.create(db, price: 0).is_a?(DatabaseError), "named check enforced"
+      assert Product.create(db, price: 1000).is_a?(DatabaseError), "unnamed check enforced"
+      assert Product.create(db, price: 1, page_id: 1, position: 1).is_a?(DatabaseError), "unique pair enforced"
+      Product.create(db, price: 1, page_id: 2, position: 1).or_panic
+      assert Product[db].count.or_panic == 2_i64
+    end
+  end
+
+  it "emits literal defaults, quotes escaped, and the database applies them" do
+    with_db do |db|
+      Product.create_table(db).or_panic
+      ddl = db.statements.find(&.starts_with?("CREATE TABLE IF NOT EXISTS `products`")) || ""
+      assert ddl.includes?("`role` TEXT NOT NULL DEFAULT 'it''s'")
+      assert ddl.includes?("`qty` INTEGER NOT NULL DEFAULT 5")
+      assert ddl.includes?("`on` INTEGER NOT NULL DEFAULT 0")
+      made = Product.create(db, price: 7).or_panic
+      row = Product[db].find(made.id).or_panic
+      assert row.role == "it's"
+      assert row.qty == 5_i64
+      assert !row.on
     end
   end
 end

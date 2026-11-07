@@ -72,7 +72,8 @@ pub def advance(rs : ResultSet, table : String) : Bool | DatabaseError
 end
 
 # The ORDER BY text of an order chain ending at *last*.
-pub def order_sql(store : Store, last : Int32, columns : Array(String), sql : String::Builder) : Nil
+# With *flip* every direction is reversed (for `last`).
+pub def order_sql(store : Store, last : Int32, columns : Array(String), sql : String::Builder, flip : Bool = false) : Nil
   return nil if last < 0
   chain = [] of Int32
   at = last
@@ -85,7 +86,7 @@ pub def order_sql(store : Store, last : Int32, columns : Array(String), sql : St
     node = store.orders[node_index]
     sql << ", " if i > 0
     sql << '`' << columns[node.column] << '`'
-    sql << " DESC" if node.desc
+    sql << " DESC" if node.desc != flip
   end
   nil
 end
@@ -107,6 +108,7 @@ pub def where_conds(store : Store, op : UInt8, last : Int32, conds : T) : Int32 
   count = 0
   conds.each do |key, value|
     next if value.is_a?(Skip)
+    next if value.is_a?(Range) && value.begin.nil? && value.end.nil?
     text << " AND " unless text.bytesize == 0
     column = "`#{key}`"
     if value.nil?
@@ -124,10 +126,22 @@ pub def where_conds(store : Store, op : UInt8, last : Int32, conds : T) : Int32 
         text << ')'
       end
     elsif value.is_a?(Range)
-      text << column << " >= ? AND " << column << (value.exclusive? ? " < ?" : " <= ?")
-      store.add_bind(bind_value(store, value.begin))
-      store.add_bind(bind_value(store, value.end))
-      count += 2
+      low = value.begin
+      high = value.end
+      if low.nil?
+        text << column << (value.exclusive? ? " < ?" : " <= ?")
+        store.add_bind(bind_value(store, high))
+        count += 1
+      elsif high.nil?
+        text << column << " >= ?"
+        store.add_bind(bind_value(store, low))
+        count += 1
+      else
+        text << column << " >= ? AND " << column << (value.exclusive? ? " < ?" : " <= ?")
+        store.add_bind(bind_value(store, low))
+        store.add_bind(bind_value(store, high))
+        count += 2
+      end
     else
       text << column << " = ?"
       store.add_bind(bind_value(store, value))
@@ -179,6 +193,7 @@ pub macro model(name, &block)
   {% cols = [] of ASTNode %}
   {% defs = [] of ASTNode %}
   {% indexes = [] of ASTNode %}
+  {% checks = [] of ASTNode %}
   {% for e in exprs %}
     {% if e.is_a?(Call) && e.name == "table" %}
       {% arg = e.args[0] %}
@@ -187,6 +202,8 @@ pub macro model(name, &block)
       {% cols << e %}
     {% elsif e.is_a?(Call) && e.name == "index" %}
       {% indexes << e %}
+    {% elsif e.is_a?(Call) && e.name == "check_constraint" %}
+      {% checks << e %}
     {% elsif e.is_a?(Def) %}
       {% defs << e %}
     {% elsif e.stringify.starts_with?("__") || e.stringify.starts_with?("::__") || e.is_a?(Nop) || e.is_a?(BoolLiteral) %}
@@ -244,8 +261,13 @@ pub macro model(name, &block)
           {% if opts["limit"] %}limit: {{opts["limit"]}},{% end %}
           {% if opts["to"] %}references: {{opts["to"].id.stringify}},{% end %}
           {% if opts["on_delete"] %}on_delete: {{opts["on_delete"]}},{% end %}
-          {% if opts["default"] != nil %}default_sql: {{opts["default"].is_a?(StringLiteral) || (opts["default"].is_a?(Call) && opts["default"].name == "view") ? ("'" + (opts["default"].is_a?(Call) ? opts["default"].args[0] : opts["default"]) + "'") : (opts["default"].is_a?(BoolLiteral) ? (opts["default"] ? "1" : "0") : opts["default"].stringify)}},{% end %}
+          {% if opts["default"] != nil %}default_sql: {{opts["default"].is_a?(StringLiteral) || (opts["default"].is_a?(Call) && opts["default"].name == "view") ? ("'" + (opts["default"].is_a?(Call) ? opts["default"].args[0] : opts["default"]).gsub(/'/, "''") + "'") : (opts["default"].is_a?(BoolLiteral) ? (opts["default"] ? "1" : "0") : opts["default"].stringify)}},{% end %}
         ), sql)
+      {% end %}
+      {% for ck in checks %}
+        {% ckname = ck.named_args && ck.named_args.find { |na| na.name.stringify == "name" } %}
+        {% if ckname %}sql << ", CONSTRAINT `" << {{ckname.value}} << '`'{% end %}
+        sql << {% if ckname %}" CHECK ("{% else %}", CHECK ("{% end %} << {{ck.args[0]}} << ')'
       {% end %}
       sql << ')'
       session.run(sql.to_s)!
@@ -508,11 +530,11 @@ pub macro model(name, &block)
       end
 
       # A typed condition per column given; `Array` is IN, `Range` is between.
-      def where(*, id : Int64 | Int32 | Array(Int64) | Nil | ::Ricord::Values::Skip = ::Ricord::Values::SKIP, {% for c in cols %}{% t = types[c.args[1].id.stringify] %}{% unless t.starts_with?("::Ricord::") %}{{c.args[0].id}} : {{t.id}}{% if t == "Int64" %} | Int32{% end %} | Array({{t.id}}){% if t == "Int64" || t == "Float64" || t == "::Std::Time::Time" || t == "String" %} | Range({{t.id}}, {{t.id}}){% end %} | Nil | ::Ricord::Values::Skip = ::Ricord::Values::SKIP, {% end %}{% end %}) : Query
+      def where(*, id : Int64 | Int32 | Array(Int64) | Nil | ::Ricord::Values::Skip = ::Ricord::Values::SKIP, {% for c in cols %}{% t = types[c.args[1].id.stringify] %}{% unless t.starts_with?("::Ricord::") %}{{c.args[0].id}} : {{t.id}}{% if t == "Int64" %} | Int32{% end %} | Array({{t.id}}){% if t == "Int64" || t == "Float64" %} | Range({{t.id}}, {{t.id}}) | Range(Nil, {{t.id}}) | Range({{t.id}}, Nil) | Range(Nil, Nil){% end %} | Nil | ::Ricord::Values::Skip = ::Ricord::Values::SKIP, {% end %}{% end %}) : Query
         where_any(0_u8, id: id, {% for c in cols %}{% unless types[c.args[1].id.stringify].starts_with?("::Ricord::") %}{{c.args[0].id}}: {{c.args[0].id}}, {% end %}{% end %})
       end
 
-      def or_where(*, id : Int64 | Int32 | Array(Int64) | Nil | ::Ricord::Values::Skip = ::Ricord::Values::SKIP, {% for c in cols %}{% t = types[c.args[1].id.stringify] %}{% unless t.starts_with?("::Ricord::") %}{{c.args[0].id}} : {{t.id}}{% if t == "Int64" %} | Int32{% end %} | Array({{t.id}}){% if t == "Int64" || t == "Float64" || t == "::Std::Time::Time" || t == "String" %} | Range({{t.id}}, {{t.id}}){% end %} | Nil | ::Ricord::Values::Skip = ::Ricord::Values::SKIP, {% end %}{% end %}) : Query
+      def or_where(*, id : Int64 | Int32 | Array(Int64) | Nil | ::Ricord::Values::Skip = ::Ricord::Values::SKIP, {% for c in cols %}{% t = types[c.args[1].id.stringify] %}{% unless t.starts_with?("::Ricord::") %}{{c.args[0].id}} : {{t.id}}{% if t == "Int64" %} | Int32{% end %} | Array({{t.id}}){% if t == "Int64" || t == "Float64" %} | Range({{t.id}}, {{t.id}}) | Range(Nil, {{t.id}}) | Range({{t.id}}, Nil) | Range(Nil, Nil){% end %} | Nil | ::Ricord::Values::Skip = ::Ricord::Values::SKIP, {% end %}{% end %}) : Query
         where_any(1_u8, id: id, {% for c in cols %}{% unless types[c.args[1].id.stringify].starts_with?("::Ricord::") %}{{c.args[0].id}}: {{c.args[0].id}}, {% end %}{% end %})
       end
 
@@ -543,10 +565,10 @@ pub macro model(name, &block)
         Query.new(session, @last_where, @last_order, @limit_value, n.to_i64)
       end
 
-      def build(selection : String, sql : String::Builder, args : Array(::Db::Value::DBValue)) : Nil
+      def build(selection : String, sql : String::Builder, args : Array(::Db::Value::DBValue), flip : Bool = false) : Nil
         sql << "SELECT " << selection << " FROM `" << TABLE << '`'
         ::Ricord::Model.where_sql(session.store, @last_where, sql, args, session.dialect)
-        ::Ricord::Model.order_sql(session.store, @last_order, COLUMNS, sql)
+        ::Ricord::Model.order_sql(session.store, @last_order, COLUMNS, sql, flip)
         session.dialect.limit_offset(@limit_value, @offset_value, sql)
         nil
       end
@@ -581,13 +603,13 @@ pub macro model(name, &block)
         to_a
       end
 
-      # The store index of the first row, -1 for none.
-      def first_index : Int32 | ::Ricord::Failures::DatabaseError
+      # The store index of the first row (the last with *flip*), -1 for none.
+      def first_index(flip : Bool = false) : Int32 | ::Ricord::Failures::DatabaseError
         query = @last_order < 0 ? order(:id) : self
         query = query.limit(1)
         sql = String::Builder.new
         args = [] of ::Db::Value::DBValue
-        query.build(COLUMNS.map { |c| "`#{c}`" }.join(", "), sql, args)
+        query.build(COLUMNS.map { |c| "`#{c}`" }.join(", "), sql, args, flip)
         s = session
         s.query(sql.to_s, args) do |rs|
           m = ::Ricord::Model.advance(rs, TABLE)
@@ -609,6 +631,19 @@ pub macro model(name, &block)
         index < 0 ? nil : {{name.id}}.new(session, session.store, index)
       end
 
+      # The last row in the query's order (by id when unordered). With a limit
+      # or offset it reads the rows and takes the last one.
+      def last : {{name.id}} | Nil | ::Ricord::Failures::DatabaseError
+        if @limit_value.nil? && @offset_value.nil?
+          index = first_index(true)
+          return index if index.is_a?(::Ricord::Failures::DatabaseError)
+          return index < 0 ? nil : {{name.id}}.new(session, session.store, index)
+        end
+        rows = (@last_order < 0 ? order(:id) : self).to_a
+        return rows if rows.is_a?(::Ricord::Failures::DatabaseError)
+        rows.empty? ? nil : {{name.id}}.new(session, session.store, rows[rows.size - 1].index)
+      end
+
       def find_by(**conds) : {{name.id}} | Nil | ::Ricord::Failures::DatabaseError
         where(**conds).first
       end
@@ -623,7 +658,14 @@ pub macro model(name, &block)
       def count : Int64 | ::Ricord::Failures::DatabaseError
         sql = String::Builder.new
         args = [] of ::Db::Value::DBValue
-        build("count(*)", sql, args)
+        if @limit_value.nil? && @offset_value.nil?
+          build("count(*)", sql, args)
+        else
+          # A limit or offset bounds the rows counted, so count a subquery.
+          inner = String::Builder.new
+          build("1", inner, args)
+          sql << "SELECT count(*) FROM (" << inner.to_s << ')'
+        end
         session.scalar(sql.to_s, Int64, args)
       end
 
@@ -637,6 +679,15 @@ pub macro model(name, &block)
           m = ::Ricord::Model.advance(rs, TABLE)
           m.is_a?(::Ricord::Failures::DatabaseError) ? m : m
         end
+      end
+
+      def any? : Bool | ::Ricord::Failures::DatabaseError
+        exists?
+      end
+
+      def empty? : Bool | ::Ricord::Failures::DatabaseError
+        found = exists?
+        found.is_a?(::Ricord::Failures::DatabaseError) ? found : !found
       end
 
       def new(**attrs) : {{name.id}}
