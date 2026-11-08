@@ -1829,6 +1829,20 @@ Goal, with batch size 1,000:
 
 *   **Proposed Changes**: The Turso job becomes required (drop `continue-on-error`).
 
+**As built (M4 part A, 2026-11-08).** Where the code differs from the items above, the code
+wins:
+
+*   `pluck(:col)` returns `Array(Ricord::Plucked)` (`String | Int64 | Float64 | Bool | Time |
+    Nil`): ris cannot pick a return type from a symbol's value. `pluck(:col, into: typed)`
+    converts into the caller's element type. Plucked text is a view into the session's store.
+*   An order column that allows NULL is refused at run time by `each` (`DatabaseError`), not at
+    compile time, because order columns are runtime symbols. An unknown association in `joins`
+    is also a run-time `DatabaseError`.
+*   `offset` returns `OffsetQuery`, which has no `each` (fixture `test/refused/each_offset.ri`);
+    `batch_size < 1` counts as 1.
+*   `delete_all`/`destroy_all`/`update_all` with `limit` or `joins` go through `` `id` IN (SELECT
+    ...) ``. Typed conditions, order and select get the table prefix under `joins`.
+
 ### M5: example, documents, contract
 
 Goal: the guide's extracted examples build and pass, and the example app passes `app_test.ri`

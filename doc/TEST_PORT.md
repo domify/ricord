@@ -21,7 +21,7 @@ completed: M1, M2, M3
 | test/grant_adapter_read_tape_test.ri | drop |  |  | adapter and config layer replaced by Ricord.open and the URI scheme | |
 | test/grant_associations_belongs_to_extras_test.ri | port | test/association_test.ri | M3 | the writer sets the key and marks it changed; belongs_to default:, the required-parent validation and saving an unsaved parent with the child are not in doc/DESIGN.md | x |
 | test/grant_associations_collection_build_create_test.ri | port | test/association_test.ri | M3 | build/create through has_many set the key, an invalid record is returned unsaved with errors, a loaded collection sees a created record; `new` through the association is named `build` (ris treats an instance method `new` as in-place construction, which may not grow the store); block, Hash and Array forms, inverse_of and RecordNotSaved for an unsaved owner are not in doc/DESIGN.md | x |
-| test/grant_associations_collection_methods_test.ri | port | test/association_test.ri | M4 | build/create ported (M3 part A); left: delete_all/destroy_all through the association, which need the M4 Query methods | |
+| test/grant_associations_collection_methods_test.ri | port | test/association_test.ri | M4 | build/create ported (M3 part A); delete_all/destroy_all through the association (owner's rows only, 0 when none, callbacks with destroy_all) in M4 part A, also in bulk_test | x |
 | test/grant_associations_collection_query_methods_test.ri | port | test/association_test.ri | M3 | count, size, exists?/any?/empty? on loaded and unloaded associations; default scopes are not in doc/DESIGN.md | x |
 | test/grant_associations_dependent_delete_all_test.ri | port | test/dependent_test.ri | M3 | has_many and has_one dependent: :delete_all with one DELETE and no child callbacks; Grant's has_one `dependent: :delete` is `:delete_all` | x |
 | test/grant_associations_has_many_foreign_key_forms_test.ri | port | test/association_test.ri | M3 | foreign_key: takes a Symbol; the bare-identifier form is Grant syntax | x |
@@ -31,7 +31,7 @@ completed: M1, M2, M3
 | test/grant_associations_has_one_through_test.ri | defer |  |  | has_one :through is in Future Improvements | |
 | test/grant_associations_polymorphic_simple_test.ri | defer |  |  | polymorphic associations are in Future Improvements | |
 | test/grant_associations_w6_collection_finders_test.ri | port | test/association_test.ri | M3 | first/last with LIMIT, other owners' rows not found, a loaded collection answers without a query; first(n), take, second..forty_two and find(ids) are not in the design's query API; the :through part is in Future Improvements | x |
-| test/grant_associations_w6_collection_relation_test.ri | port | test/association_test.ri | M4 | order/limit through the association ported (M3); left: pluck, aggregates, distinct, batches and joins, which are M4 | |
+| test/grant_associations_w6_collection_relation_test.ri | port | test/association_test.ri | M4 | order/limit (M3); pluck of one and several columns, distinct, batched each and joins from the owner (M4 part A); sum/minimum/average, group, reorder/reverse_order and the :through case are not in doc/DESIGN.md | x |
 | test/grant_attribute_api_test.ri | defer |  |  | attribute API extras are not in v1 | |
 | test/grant_attributes_alias_attribute_test.ri | defer |  |  | attribute API extras are not in v1 | |
 | test/grant_attributes_assign_attributes_test.ri | defer |  |  | attribute API extras are not in v1 | |
@@ -108,7 +108,7 @@ completed: M1, M2, M3
 | test/grant_convenience_create_with_test.ri | defer |  |  | create_with and scope attributes not built and not planned in doc/DESIGN.md | |
 | test/grant_convenience_find_by_ids_test.ri | defer |  |  | find with several ids not built and not planned in doc/DESIGN.md (where(id: [...]) keeps no id order and reports no missing ids) | |
 | test/grant_convenience_find_or_create_by_test.ri | defer |  |  | find_or_create_by, find_or_initialize_by, first_or_create and scope attributes on create not built and not planned in doc/DESIGN.md | |
-| test/grant_convenience_methods_query_test.ri | port | test/crud_test.ri | M4 | pluck, pick and batches are M4; sole, find_sole_by, annotate, destroy_by, delete_by, touch_all and update_counters not built and not planned in doc/DESIGN.md | |
+| test/grant_convenience_methods_query_test.ri | port | test/crud_test.ri | M4 | pluck, pick and a batched each on a filtered query (M4 part A); sole, find_sole_by, annotate, destroy_by, delete_by, touch_all and update_counters not built and not planned in doc/DESIGN.md | x |
 | test/grant_convenience_relation_finders_test.ri | port | test/crud_test.ri | M1 | find_by and find on a query, nil as IS NULL, query unchanged; find_by!, find_sole_by and named scopes not built | x |
 | test/grant_converters_enum_test.ri | defer |  |  | enums are in Future Improvements | |
 | test/grant_converters_json_test.ri | defer |  |  | converting an object to and from JSON text (Converters::Json over String, JSON::Any and Bytes) is not in doc/DESIGN.md; a :json column holds text and json_field reads typed keys | |
@@ -196,28 +196,28 @@ completed: M1, M2, M3
 | test/grant_query_builder_test.ri | port | test/crud_test.ri | M1 | where, or_where, IN, IS NULL, raw where, order, limit and offset, checked by rows and SQL; where_fields introspection, where(:col, :op, value), and_where and raw or_where not in Ricord | x |
 | test/grant_query_calculate_test.ri | defer |  |  | calculate and aggregates are not built | |
 | test/grant_query_cte_test.ri | defer |  |  | query feature not in v1 | |
-| test/grant_query_distinct_test.ri | port | test/pluck_test.ri | M4 |  | |
+| test/grant_query_distinct_test.ri | port | test/pluck_test.ri | M4 | distinct with where, order and joins, an earlier query not made distinct, DISTINCT in SQL and in count; distinct? and Builder introspection are not in Ricord | x |
 | test/grant_query_excluding_invert_test.ri | defer |  |  | excluding/without and invert_where are not built | |
 | test/grant_query_executor_test.ri | defer |  |  | query feature not in v1 | |
 | test/grant_query_existence_predicates_test.ri | port | test/crud_test.ri | M1 | exists?, empty? and any? as one LIMIT 1 probe with no ORDER BY, for no, one and many rows, a limit and an offset; none?, many?, one? and sole not built | x |
 | test/grant_query_extract_associated_test.ri | defer |  |  | query feature not in v1 | |
-| test/grant_query_find_each_test.ri | port | test/each_test.ri | M4 |  | |
+| test/grant_query_find_each_test.ri | port | test/each_test.ri | M4 | every row once with a condition, order and limit kept, descending order; offset is refused at compile time (OffsetQuery has no each); cursor:, start:, finish:, error_on_ignore and raw/NULLS ORDER BY are not in doc/DESIGN.md (keyset on the order columns plus id) | x |
 | test/grant_query_from_subquery_test.ri | defer |  |  | query feature not in v1 | |
 | test/grant_query_group_alias_test.ri | defer |  |  | query feature not in v1 | |
 | test/grant_query_grouped_aggregates_test.ri | defer |  |  | query feature not in v1 | |
 | test/grant_query_having_test.ri | defer |  |  | query feature not in v1 | |
 | test/grant_query_implicit_order_test.ri | port | test/crud_test.ri | M1 | plain reads unordered, first by id ascending, last by id descending (filtered too), an explicit order kept for first and last; find_each is M4; the implicit_order setting and implicit_order_column not built | x |
-| test/grant_query_in_batches_relation_test.ri | port | test/each_test.ri | M4 |  | |
+| test/grant_query_in_batches_relation_test.ri | defer |  |  | in_batches (each batch yielded as a relation, load:, a lazy iterator) is not in doc/DESIGN.md; each batches internally | |
 | test/grant_query_in_order_of_test.ri | defer |  |  | query feature not in v1 | |
-| test/grant_query_joins_integration_test.ri | port | test/pluck_test.ri | M4 |  | |
-| test/grant_query_joins_nested_raw_test.ri | port | test/pluck_test.ri | M4 |  | |
-| test/grant_query_joins_test.ri | port | test/pluck_test.ri | M4 |  | |
+| test/grant_query_joins_integration_test.ri | port | test/pluck_test.ri | M4 | INNER JOIN SQL, several joins, DISTINCT, where and order with joins, empty results; LEFT JOIN, group_by/having and reorder/reverse_order are not in doc/DESIGN.md | x |
+| test/grant_query_joins_nested_raw_test.ri | port | test/pluck_test.ri | M4 | each level joined from the model the previous one reached, filtering through the nested table, has_many rows multiplied and collapsed by distinct, an unknown association fails (when the query runs), the receiver unchanged; raw join fragments, left_joins, aliases, self joins and join de-duplication are not in doc/DESIGN.md | x |
+| test/grant_query_joins_test.ri | port | test/pluck_test.ri | M4 | one and two joins, joins with where, the Query type kept, an earlier query keeps no joins; LEFT JOIN and join_clauses introspection are not in Ricord | x |
 | test/grant_query_lazy_all_test.ri | defer |  |  | query feature not in v1 | |
 | test/grant_query_left_outer_joins_test.ri | defer |  |  | query feature not in v1 | |
 | test/grant_query_merge_test.ri | defer |  |  | query feature not in v1 | |
 | test/grant_query_modifiers_test.ri | defer |  |  | reorder, reverse_order, rewhere, reselect, regroup and none are not built | |
 | test/grant_query_named_binds_test.ri | defer |  |  | named binds (:name) in raw conditions are not built | |
-| test/grant_query_pluck_on_tape_test.ri | port | test/pluck_test.ri | M4 |  | |
+| test/grant_query_pluck_on_tape_test.ri | port | test/pluck_test.ri | M4 | pluck of several columns with NULL and multi-byte text, pick, pick on no rows is nil, an empty pluck; plucked text is a view of the session's store (no to_heap); none is not in Ricord | x |
 | test/grant_query_query_parity_explain_test.ri | defer |  |  | query feature not in v1 | |
 | test/grant_query_query_parity_test.ri | defer |  |  | ids, unscope, association joins, annotate, find_each and update_all are not built | |
 | test/grant_query_query_regressions_test.ri | port | test/crud_test.ri | M1 | Q-6 exclusive range end and Q-7 OR range grouped with AND (empty IN is in crud); Q-1..Q-5 and Q-8..Q-15 need pluck, ids, delete_all/update_all, where.not_in, nil in an IN list, raw bind arrays, subqueries, group, joins or batching | x |
@@ -229,19 +229,19 @@ completed: M1, M2, M3
 | test/grant_query_unscope_where_column_test.ri | defer |  |  | query feature not in v1 | |
 | test/grant_query_w6_merge_order_test.ri | defer |  |  | query feature not in v1 | |
 | test/grant_query_w6_reorder_sql_test.ri | defer |  |  | reorder, reselect, regroup and reverse_order are not in Ricord's query API | |
-| test/grant_query_where_nested_hash_test.ri | port | test/crud_test.ri | M4 | a nested hash on a joined table needs joins (M4); record values for a belongs_to need associations (M3) | |
+| test/grant_query_where_nested_hash_test.ri | defer |  |  | typed conditions on a joined table's columns (nested hash, association-name keys) are not in Ricord's query API; with joins, conditions on a joined table are raw where with qualified names | |
 | test/grant_query_where_not_or_and_not_test.ri | defer |  |  | where.not is not in Ricord's query API | |
 | test/grant_query_where_not_or_and_relations_test.ri | defer |  |  | or/and of two queries is not in Ricord's query API; the keyword and string or_where forms are in test/crud_test.ri | |
-| test/grant_query_where_not_or_and_test.ri | port | test/crud_test.ri | M4 | qualifying own columns against later joins needs joins (M4) | |
+| test/grant_query_where_not_or_and_test.ri | port | test/crud_test.ri | M4 | own typed conditions are qualified with the table, so a later joins cannot make them ambiguous (M4 part A); invert_where, where.not and hash conditions on a joined table are not in Ricord | x |
 | test/grant_query_where_range_test.ri | port | test/crud_test.ri | M1 | closed, exclusive, beginless, endless and nil..nil ranges on Int64 and Float64 with where, or_where and chaining; Time and String ranges do not build (ris refuses a Range holding a tape type without @[OnTape]); ranges inside an array and where.between not in Ricord | x |
 | test/grant_querying_all_test.ri | port | test/crud_test.ri | M1 | all, and a raw where for the Model.all(sql, binds) form | x |
 | test/grant_querying_count_test.ri | port | test/crud_test.ri | M1 | Int64 counts, 0 for none, a value past Int32::MAX through db.scalar; grouped count needs group_by (not in Ricord); Result.integer_count is Grant-internal | x |
 | test/grant_querying_enumerable_baseline_test.ri | port | test/crud_test.ri | M1 | to_a then Array methods, count, any?, first, exists?, chaining; each/map/reject on a query need batched each (M4); size is count | x |
-| test/grant_querying_enumerable_test.ri | port | test/each_test.ri | M4 | a Query is not Enumerable: block forms of each/map/select/count/any? and the rest on a query need batched each (M4) | |
+| test/grant_querying_enumerable_test.ri | port | test/each_test.ri | M4 | each over all and filtered rows, with order and limit (M4 part A); a Query is not Enumerable: the block forms of map/select/reject/count/any?/all?, min_by, group_by, reduce and the rest are not in doc/DESIGN.md (use to_a) | x |
 | test/grant_querying_exists_test.ri | port | test/crud_test.ri | M1 | exists? on where(id:), several keys and nil; exists?(id)/exists?(hash) shorthands, String primary keys and default_scope not in Ricord | x |
 | test/grant_querying_find_by_test.ri | port | test/crud_test.ri | M1 | a string, several keys, nil, a keyword column name (backtick quoted); find_by_strict and hash arguments not in Ricord | x |
-| test/grant_querying_find_each_test.ri | port | test/each_test.ri | M4 |  | |
-| test/grant_querying_find_in_batches_test.ri | port | test/each_test.ri | M4 |  | |
+| test/grant_querying_find_each_test.ri | port | test/each_test.ri | M4 | all rows, none, a parameterized query kept; starting at an offset is refused at compile time (OffsetQuery has no each) | x |
+| test/grant_querying_find_in_batches_test.ri | port | test/each_test.ri | M4 | all rows in batches of batch_size, nothing for no rows, a short last batch, a parameterized query kept, through each(batch_size:); yielding each batch as an array is not in doc/DESIGN.md; batch_size below 1 is taken as 1, not refused; an offset start is refused at compile time | x |
 | test/grant_querying_find_test.ri | port | test/crud_test.ri | M1 | find by id, persisted state, RecordNotFound (not nil) for a missing id; custom primary keys and namespaced models not in Ricord | x |
 | test/grant_querying_first_test.ri | port | test/crud_test.ri | M1 | first by id, by an explicit order, nil for no row; the first(sql) and first_strict forms are order/where then first | x |
 | test/grant_querying_from_rs_test.ri | defer |  |  | building a record from an arbitrary result set (named or reordered columns) is not in Ricord; read_row reads COLUMNS order only | |
@@ -250,7 +250,7 @@ completed: M1, M2, M3
 | test/grant_querying_query_builder_test.ri | port | test/crud_test.ri | M1 | IN on id, string, number and bool columns with where and or_where, exists? on where; and_where is where | x |
 | test/grant_querying_relation_calculations_test.ri | defer |  |  | sum/avg/min/max are not in Ricord | |
 | test/grant_querying_reload_test.ri | port | test/crud_test.ri | M1 | reload in place, unsaved changes dropped, RecordNotFound after destroy; changes/previous_changes are M2 | x |
-| test/grant_querying_select_projection_test.ri | port | test/pluck_test.ri | M4 |  | |
+| test/grant_querying_select_projection_test.ri | defer |  |  | select(*cols) with partly hydrated records and reselect are not in Ricord; projections are pluck (pluck_test) | |
 | test/grant_sanitization_test.ri | defer |  |  | Ricord binds every value and has no quote/sanitize API | |
 | test/grant_schema_advisory_lock_test.ri | defer |  |  | migrations and schema tooling are in Future Improvements | |
 | test/grant_schema_alter_table_test.ri | defer |  |  | migrations and schema tooling are in Future Improvements | |
@@ -288,7 +288,7 @@ completed: M1, M2, M3
 | test/grant_scoping_named_scope_chaining_test.ri | defer |  |  | default and named scopes are not in v1 (scope comes from associations) | |
 | test/grant_scoping_scoping_test.ri | defer |  |  | default and named scopes are not in v1 (scope comes from associations) | |
 | test/grant_secure_token_test.ri | defer |  |  | attribute API extras are not in v1 | |
-| test/grant_select_select_test.ri | port | test/pluck_test.ri | M4 |  | |
+| test/grant_select_select_test.ri | defer |  |  | the custom-SQL query macro and view models are not in Ricord; selecting columns is pluck (pluck_test) | |
 | test/grant_simple_connection_test.ri | port | test/crud_test.ri | M1 | a second Ricord.open on the same URI sees committed rows; the connection registry and roles are replaced by Ricord.open and the URI | x |
 | test/grant_spec_support_transactional_wrapper_test.ri | port | test/crud_test.ri | M1 | rows made in a rolled-back write, nested ones too, are gone (with_db gives each test a fresh file, so no wrapper is needed); after_commit in the wrapper is M2; several connections and the timing check are Grant-only | x |
 | test/grant_table_table_test.ri | port | test/schema_test.ri | M1 | the table name from table or the model name (pluralized), the primary key id; custom primary keys and namespaced models are not in Ricord | x |
@@ -310,7 +310,7 @@ completed: M1, M2, M3
 | test/grant_transaction_test.ri | port | test/write_test.ri | M1 | commit, rollback on a failure and on Rollback, a nested write as a savepoint, a released savepoint undone with the outer write, whether a write is open (state.depth); a joined nested block is not in Ricord (every nested write is a savepoint); isolation levels and readonly are PostgreSQL/MySQL options | x |
 | test/grant_transactions_create_test.ri | port | test/write_test.ri | M1 | create persists and reads back (the reserved word column is in crud_test); validations and skip_timestamps are M2; custom primary keys and namespaced models are not in Ricord | x |
 | test/grant_transactions_destroy_test.ri | port | test/write_test.ri | M1 | destroy removes the row and moves destroyed? and persisted?; a before_destroy abort is M2; custom primary keys and namespaced models are not in Ricord | x |
-| test/grant_transactions_import_test.ri | port | test/write_test.ri | M4 | import_records is a bulk write (M4); upserts on a non-auto key need settable primary keys, not in Ricord | |
+| test/grant_transactions_import_test.ri | defer |  |  | import_records (bulk INSERT with batch_size and upserts) is not among doc/DESIGN.md's M4 signatures; upserts on a non-auto key need settable primary keys, not in Ricord | |
 | test/grant_transactions_save_natural_key_test.ri | defer |  |  | String (natural) primary keys are not in Ricord (column 0 is always the integer id) | |
 | test/grant_transactions_save_test.ri | port | test/write_test.ri | M1 | save inserts then updates, new_record? and persisted? move; validations, type conversion errors and skip_timestamps are M2; a new record with another's id needs a settable id, not in Ricord | x |
 | test/grant_transactions_timestamp_precision_test.ri | port | test/dirty_test.ri | M2 | assigned stamps with microseconds are kept by a create and read back equal, a later changing save moves updated_at with subsecond precision; set_timestamps and save(skip_timestamps:) become assigning the columns, touch is not in doc/DESIGN.md | x |

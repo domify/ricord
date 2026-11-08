@@ -1,0 +1,18 @@
+# expect: cannot store data made in this block where it outlives the block
+# M4: a record yielded by Query#each lives in its batch's store; keeping it
+# past the block is refused when the program is built.
+module test/refused/each_record_escape
+
+import ricord
+import test/spec_helper::*
+import test/models::*
+
+with_db do |db|
+  kept = nil
+  Court[db].each do |court|
+    kept = court
+    nil
+  end
+  puts kept.nil?
+  nil
+end

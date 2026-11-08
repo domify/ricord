@@ -1,0 +1,13 @@
+# expect: undefined method 'each' for Test::Models::Court::OffsetQuery
+# M4: offset returns Court::OffsetQuery, which has no each: a keyset walk
+# cannot start at an offset.
+module test/refused/each_offset
+
+import ricord
+import test/spec_helper::*
+import test/models::*
+
+with_db do |db|
+  Court[db].order(:name).offset(10).each { |_| nil }
+  nil
+end

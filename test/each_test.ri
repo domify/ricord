@@ -1,0 +1,265 @@
+# M4: Query#each: keyset batches on the order columns plus id, one store per
+# batch (records, load group and preloads), limit caps the total, inserts
+# during iteration neither repeat nor skip rows; an order column that allows
+# NULL is refused; offset and keeping a yielded record are refused at compile
+# time (test/refused/each_offset.ri, test/refused/each_record_escape.ri,
+# test/refused/each_escape.ri). Also Grant's find_each, find_in_batches,
+# in_batches and enumerable tests.
+module test/each_test
+
+import db/db/spec::{describe, it}
+import db/db/value::{DBValue}
+import ricord
+import ricord/sessions::{Session}
+import ricord/failures::{DatabaseError}
+import ricord/associations
+import test/spec_helper::*
+import test/models::*
+
+# Inserts *count* courts in one write, 500 rows per INSERT. Court i (id i) is
+# named "c" + (count + 1 - i) zero-padded to 5 digits, so name order is the
+# reverse of id order; rank is i % 3 (never NULL).
+def seed_courts(db : Session, count : Int32) : Nil
+  db.write do |tx|
+    done = 0
+    while done < count
+      sql = ""
+      sql << "INSERT INTO `courts` (`name`, `rank`, `active`) VALUES "
+      args = [] of DBValue
+      n = 0
+      while n < 500 && done < count
+        i = done + 1
+        sql << ", " if n > 0
+        sql << "('c' || substr('00000' || ?, -5), ?, 1)"
+        args << (count + 1 - i).to_i64
+        args << (i % 3).to_i64
+        n += 1
+        done += 1
+      end
+      tx.exec(sql, args).or_panic
+    end
+    nil
+  end.or_panic
+  db.release
+  nil
+end
+
+# Whether the *nth* SELECT (0-based) logged from *start* contains *text*.
+def select_has?(db : Session, start : Int32, nth : Int32, text : String) : Bool
+  k = 0
+  db.statements.each_with_index do |s, i|
+    next unless i >= start && s.starts_with?("SELECT")
+    return s.includes?(text) if k == nth
+    k += 1
+  end
+  false
+end
+
+def selects_of(db : Session, start : Int32) : Int32
+  n = 0
+  db.statements.each_with_index { |s, i| n += 1 if i >= start && s.starts_with?("SELECT") }
+  n
+end
+
+describe "each" do
+  it "walks 10,000 rows in key order, 1,000 per batch" do
+    with_db do |db|
+      seed_courts(db, 10_000)
+      start = db.statements.size
+      stored = db.store.size
+      seen = 0
+      last_id = 0_i64
+      in_order = true
+      biggest = 0
+      Court[db].each do |court|
+        seen += 1
+        in_order = false unless court.id == last_id + 1
+        last_id = court.id
+        biggest = court.store.size if court.store.size > biggest
+        nil
+      end.or_panic
+      assert seen == 10_000
+      assert in_order
+      # Ten full batches, then one that comes back empty.
+      assert selects_of(db, start) == 11
+      # Each batch has its own store of at most batch_size records; the
+      # session's store does not grow.
+      assert biggest == 1000
+      assert db.store.size == stored
+      # The second batch starts after the first one's last key.
+      assert select_has?(db, start, 0, "FROM `courts` ORDER BY `id` LIMIT 1000")
+      assert select_has?(db, start, 1, "WHERE ((`id` > ?)) ORDER BY `id` LIMIT 1000")
+    end
+  end
+
+  it "walks 10,000 rows in order(:name) order, keyset on name then id" do
+    with_db do |db|
+      seed_courts(db, 10_000)
+      start = db.statements.size
+      seen = 0
+      last_id = 10_001_i64
+      in_order = true
+      Court[db].order(:name).each do |court|
+        seen += 1
+        in_order = false unless court.id == last_id - 1
+        last_id = court.id
+        nil
+      end.or_panic
+      assert seen == 10_000
+      assert in_order
+      assert select_has?(db, start, 0, "ORDER BY `name`, `id` LIMIT 1000")
+      assert select_has?(db, start, 1, "((`name` > ?) OR (`name` = ? AND `id` > ?))")
+    end
+  end
+
+  it "keeps descending directions and several order columns" do
+    with_db do |db|
+      seed_courts(db, 25)
+      ids = [] of Int64
+      Court[db].order(name: :desc).each(batch_size: 4) { |court| ids << court.id; nil }.or_panic
+      assert ids == (1_i64..25_i64).to_a
+      # Two order columns, active (all true) then id.
+      by_rank = [] of Int64
+      Court[db].where(rank: 0_i64..2_i64).order(:active, :id).each(batch_size: 3) { |court| by_rank << court.id; nil }.or_panic
+      assert by_rank == (1_i64..25_i64).to_a
+      down = [] of Int64
+      Court[db].order(id: :desc).each(batch_size: 7) { |court| down << court.id; nil }.or_panic
+      assert down == (1_i64..25_i64).to_a.reverse
+    end
+  end
+
+  it "caps the total at the query's limit" do
+    with_db do |db|
+      seed_courts(db, 30)
+      start = db.statements.size
+      ids = [] of Int64
+      Court[db].limit(12).each(batch_size: 5) { |court| ids << court.id; nil }.or_panic
+      assert ids == (1_i64..12_i64).to_a
+      # 5 + 5 + 2: the last batch asks only for what is left, and the walk
+      # stops without another query.
+      assert selects_of(db, start) == 3
+      assert select_has?(db, start, 2, "LIMIT 2")
+      few = [] of Int64
+      Court[db].order(id: :desc).limit(3).each { |court| few << court.id; nil }.or_panic
+      assert few == [30_i64, 29_i64, 28_i64]
+      none = 0
+      Court[db].limit(0).each { |_| none += 1; nil }.or_panic
+      assert none == 0
+    end
+  end
+
+  it "keeps the query's conditions and an empty result yields nothing" do
+    with_db do |db|
+      seed_courts(db, 20)
+      ids = [] of Int64
+      Court[db].where(rank: 1_i64).each(batch_size: 2) { |court| ids << court.id; nil }.or_panic
+      assert ids == [1_i64, 4_i64, 7_i64, 10_i64, 13_i64, 16_i64, 19_i64]
+      ors = [] of Int64
+      Court[db].where(id: 1_i64).or_where(id: 20_i64).each(batch_size: 1) { |court| ors << court.id; nil }.or_panic
+      assert ors == [1_i64, 20_i64]
+      none = 0
+      Court[db].where(name: "nope").each { |_| none += 1; nil }.or_panic
+      assert none == 0
+    end
+  end
+
+  it "neither repeats nor skips rows when rows are inserted during the walk" do
+    with_db do |db|
+      seed_courts(db, 30)
+      counts = Array(Int32).new(40, 0)
+      added = false
+      Court[db].each(batch_size: 10) do |court|
+        counts[court.id.to_i32] += 1
+        unless added
+          added = true
+          # Rows inserted after the first batch was read.
+          5.times { |k| Court.create(db, name: "new#{k}", rank: 1).or_panic }
+        end
+        nil
+      end.or_panic
+      # Every row, old and new, exactly once.
+      once = 0
+      (1..35).each { |id| once += 1 if counts[id] == 1 }
+      assert once == 35
+      assert counts.sum == 35
+    end
+  end
+
+  it "reads each batch as a load group with its preloads in the batch's store" do
+    with_db do |db|
+      a = Account.create(db, name: "a").or_panic
+      b = Account.create(db, name: "b").or_panic
+      6.times { |k| Court.create(db, name: "c#{k}", account_id: k.even? ? a.id : b.id).or_panic }
+      db.release
+      start = db.statements.size
+      names = String::Builder.new
+      Court[db].each(batch_size: 3) do |court|
+        account = court.account.or_panic
+        names << (account ? account.name : "-")
+        nil
+      end.or_panic
+      assert names.to_s == "ababab"
+      # Two batches of three plus the empty one, one account query per batch.
+      assert selects_of(db, start) == 5
+      start = db.statements.size
+      grouped = 0
+      Court[db].includes(:account).each(batch_size: 4) do |court|
+        grouped += 1 if ::Ricord::Associations.group_size(court.store, ::Ricord::Associations.group_first(court.store, court.index)) == (court.id <= 4 ? 4 : 2)
+        assert !court.account.or_panic.nil?
+        nil
+      end.or_panic
+      assert grouped == 6
+      # Batch of 4 + its accounts, batch of 2 + its accounts; no extra query.
+      assert selects_of(db, start) == 4
+    end
+  end
+
+  it "walks a has_many association inside its scope" do
+    with_db do |db|
+      a = Account.create(db, name: "a").or_panic
+      b = Account.create(db, name: "b").or_panic
+      Court.create(db, name: "x1", account_id: a.id).or_panic
+      Court.create(db, name: "y1", account_id: b.id).or_panic
+      Court.create(db, name: "x2", account_id: a.id).or_panic
+      names = String::Builder.new
+      scoped = 0
+      a.courts.each(batch_size: 1) do |court|
+        names << court.name << ','
+        at = court.store.scopes[court.index]
+        scoped += 1 if at >= 0 && court.store.scope_vals[at] == a.id
+        nil
+      end.or_panic
+      assert names.to_s == "x1,x2,"
+      assert scoped == 2
+    end
+  end
+
+  it "sees the write's own rows inside a write" do
+    with_db do |db|
+      seed_courts(db, 3)
+      seen = 0
+      db.write do |tx|
+        Court.create(tx, name: "inside").or_panic
+        Court[tx].each(batch_size: 2) { |_| seen += 1; nil }.or_panic
+        nil
+      end.or_panic
+      assert seen == 4
+    end
+  end
+
+  it "refuses an order column that allows NULL" do
+    with_db do |db|
+      seed_courts(db, 3)
+      walked = 0
+      refused = Court[db].order(:rank).each { |_| walked += 1; nil }
+      assert refused.is_a?(DatabaseError)
+      if refused.is_a?(DatabaseError)
+        assert refused.message.includes?("order column rank allows NULL; use pluck or to_a")
+      end
+      assert walked == 0
+      # A non-null column is fine.
+      Court[db].order(:active, :name).each { |_| walked += 1; nil }.or_panic
+      assert walked == 3
+    end
+  end
+end

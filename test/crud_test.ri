@@ -199,6 +199,36 @@ describe "query building" do
       assert db.statements.any?(&.includes?(" OR (`rank` >= ? AND `rank` < ?)"))
     end
   end
+
+  # Ported from grant_query_where_not_or_and (M4): typed conditions name
+  # their own table, so a later joins (both tables have id and name) cannot
+  # make them ambiguous.
+  it "qualifies own columns so a later joins cannot make them ambiguous" do
+    with_db do |db|
+      a = Account.create(db, name: "ann").or_panic
+      Court.create(db, name: "e", account_id: a.id).or_panic
+      Court.create(db, name: "f", account_id: a.id).or_panic
+      Court.create(db, name: "g").or_panic
+      rows = Court[db].where(id: 1_i64).or_where(id: 2_i64).joins(:account).order(:name).to_a.or_panic
+      assert rows.map(&.name) == ["e", "f"]
+      assert db.statements.any?(&.includes?("WHERE ((`courts`.`id` = ?)) OR (`courts`.`id` = ?) ORDER BY `courts`.`name`"))
+      assert Court[db].where(name: "f").joins(:account).where("`accounts`.`name` = ?", "ann").count.or_panic == 1_i64
+    end
+  end
+
+  # Ported from grant_convenience_methods_query (M4): pluck, pick and a
+  # batched walk on a filtered query.
+  it "plucks, picks and walks a filtered query" do
+    with_db do |db|
+      ["b", "a", "c"].each_with_index { |n, i| Court.create(db, name: n, rank: i).or_panic }
+      assert Court[db].where(rank: 1_i64..2_i64).order(:name).pluck(:name).or_panic == ["a", "c"] of ::Ricord::Model::Plucked
+      assert Court[db].where(rank: 0_i64).pick(:name).or_panic == "b"
+      assert Court[db].where(rank: 9_i64).pick(:name).or_panic.nil?
+      ranks = [] of Int64
+      Court[db].where(rank: 0_i64..2_i64).order(name: :desc).each(batch_size: 1) { |court| ranks << (court.rank || -1_i64); nil }.or_panic
+      assert ranks == [2_i64, 0_i64, 1_i64]
+    end
+  end
 end
 
 # Ported from grant_public_api_return_types: the query API's static types.
@@ -208,7 +238,10 @@ describe "public api return types" do
       assert typeof(Court[db]).to_s == Court::Query.to_s
       assert typeof(Court[db].where(name: "a")).to_s == Court::Query.to_s
       assert typeof(Court[db].where("name = ?", "a")).to_s == Court::Query.to_s
-      assert typeof(Court[db].order(:name).limit(1).offset(1)).to_s == Court::Query.to_s
+      assert typeof(Court[db].order(:name).limit(1)).to_s == Court::Query.to_s
+      # M4: offset returns the OffsetQuery type (no each, offset or bulk writes).
+      assert typeof(Court[db].order(:name).limit(1).offset(1)).to_s == Court::OffsetQuery.to_s
+      assert typeof(Court[db].offset(1).where(name: "a").limit(1)).to_s == Court::OffsetQuery.to_s
       assert typeof(Court[db].to_a).to_s == (Array(Court) | ::Ricord::Failures::DatabaseError).to_s
       assert typeof(Court[db].first).to_s == (Court | Nil | ::Ricord::Failures::DatabaseError).to_s
       assert typeof(Court[db].find_by(name: "a")).to_s == (Court | Nil | ::Ricord::Failures::DatabaseError).to_s

@@ -203,3 +203,44 @@ describe "associations" do
     end
   end
 end
+
+# M4 through a has_many association: Grant's collection_methods
+# (delete_all/destroy_all) and w6_collection_relation (pluck, distinct,
+# batches, joins).
+describe "association collection methods (M4)" do
+  it "deletes and destroys the owner's records only" do
+    with_books do |db|
+      a = Author.create(db, name: "a").or_panic
+      o = Author.create(db, name: "o").or_panic
+      Book.create(db, author_id: a.id, title: "x").or_panic
+      Book.create(db, author_id: a.id, title: "y").or_panic
+      Book.create(db, author_id: o.id, title: "z").or_panic
+      assert a.books.where(title: "x").delete_all.or_panic == 1_i64
+      assert a.books.destroy_all.or_panic == 1_i64
+      assert a.books.delete_all.or_panic == 0_i64
+      assert a.books.destroy_all.or_panic == 0_i64
+      assert o.books.count.or_panic == 1_i64
+    end
+  end
+
+  it "plucks, counts distinct, walks in batches and joins from the owner" do
+    with_books do |db|
+      a = Author.create(db, name: "a").or_panic
+      o = Author.create(db, name: "o").or_panic
+      Book.create(db, author_id: a.id, title: "b").or_panic
+      Book.create(db, author_id: a.id, title: "a").or_panic
+      Book.create(db, author_id: a.id, title: "a").or_panic
+      Book.create(db, author_id: o.id, title: "c").or_panic
+      start = db.statements.size
+      assert a.books.order(:title).pluck(:title).or_panic == ["a", "a", "b"] of ::Ricord::Model::Plucked
+      assert selects_since(db, start) == 1
+      assert a.books.order(:id).pluck(:id, :title).or_panic == [{1_i64, "b"}, {2_i64, "a"}, {3_i64, "a"}]
+      assert a.books.distinct.pluck(:title).or_panic.size == 2
+      seen = 0
+      a.books.each(batch_size: 2) { |_| seen += 1; nil }.or_panic
+      assert seen == 3
+      assert a.books.joins(:author).count.or_panic == 3_i64
+      assert a.books.joins(:author).where("`authors`.`name` = ?", "o").count.or_panic == 0_i64
+    end
+  end
+end

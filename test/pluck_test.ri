@@ -1,0 +1,228 @@
+# M4: projections: pluck (one column, several as tuples, into: a typed
+# array), pick (nil on an empty result), to_json, distinct, joins (an INNER
+# JOIN per association, hop by hop, with the scope added per joined table),
+# also on OffsetQuery. Also Grant's pluck, select, distinct and joins tests.
+module test/pluck_test
+
+import db/db/spec::{describe, it}
+import std/time::{Time}
+import ricord
+import ricord/model
+import ricord/sessions::{Session}
+import ricord/failures::{DatabaseError}
+import test/spec_helper::*
+import test/models::*
+
+def seed(db : Session) : Nil
+  Court.create(db, name: "b", rank: 2, score: 1.5).or_panic
+  Court.create(db, name: "a", rank: 1, active: false).or_panic
+  Court.create(db, name: "c").or_panic
+  nil
+end
+
+describe "pluck" do
+  it "plucks one column as values of its getter type" do
+    with_db do |db|
+      seed(db)
+      ids = Court[db].order(:id).pluck(:id).or_panic
+      assert ids == [1_i64, 2_i64, 3_i64] of ::Ricord::Model::Plucked
+      names = Court[db].order(:name).pluck(:name).or_panic
+      assert names == ["a", "b", "c"] of ::Ricord::Model::Plucked
+      ranks = Court[db].order(:id).pluck(:rank).or_panic
+      assert ranks == [2_i64, 1_i64, nil] of ::Ricord::Model::Plucked
+      flags = Court[db].order(:id).pluck(:active).or_panic
+      assert flags == [true, false, true] of ::Ricord::Model::Plucked
+      scores = Court[db].where(name: "b").pluck(:score).or_panic
+      assert scores == [1.5] of ::Ricord::Model::Plucked
+      assert Court[db].where(name: "z").pluck(:name).or_panic.empty?
+      assert db.statements.any?(&.includes?("SELECT `name` FROM `courts` ORDER BY `name`"))
+    end
+  end
+
+  it "plucks several columns as tuples" do
+    with_db do |db|
+      seed(db)
+      rows = Court[db].order(:name).pluck(:name, :rank).or_panic
+      assert rows.size == 3
+      assert rows[0] == {"a", 1_i64}
+      assert rows[2] == {"c", nil}
+      three = Court[db].where(name: "b").pluck(:id, :name, :active).or_panic
+      assert three == [{1_i64, "b", true}]
+    end
+  end
+
+  it "appends into a typed array and returns the row count" do
+    with_db do |db|
+      seed(db)
+      ids = [] of Int64
+      assert Court[db].order(:id).pluck(:id, into: ids).or_panic == 3_i64
+      assert Court[db].where(name: "a").pluck(:id, into: ids).or_panic == 1_i64
+      assert ids == [1_i64, 2_i64, 3_i64, 2_i64]
+      names = [] of String
+      Court[db].order(name: :desc).pluck(:name, into: names).or_panic
+      assert names == ["c", "b", "a"]
+      ranks = [] of Int64 | Nil
+      Court[db].order(:id).pluck(:rank, into: ranks).or_panic
+      assert ranks == [2_i64, 1_i64, nil]
+      pairs = [] of {String, Bool}
+      assert Court[db].order(:name).pluck(:name, :active, into: pairs).or_panic == 3_i64
+      assert pairs == [{"a", false}, {"b", true}, {"c", true}]
+      unknown = Court[db].pluck(:nope, into: ids)
+      assert unknown.is_a?(DatabaseError)
+    end
+  end
+
+  it "picks the first row, nil on an empty result" do
+    with_db do |db|
+      assert Court[db].pick(:name).or_panic.nil?
+      assert Court[db].pick(:name, :rank).or_panic.nil?
+      seed(db)
+      assert Court[db].order(:name).pick(:name).or_panic == "a"
+      assert Court[db].order(:name).pick(:name, :rank).or_panic == {"a", 1_i64}
+      assert Court[db].where(name: "z").pick(:id).or_panic.nil?
+      assert db.statements.any?(&.includes?("SELECT `name`, `rank` FROM `courts` ORDER BY `name` LIMIT 1"))
+    end
+  end
+
+  it "plucks through OffsetQuery and has_many" do
+    with_db do |db|
+      seed(db)
+      assert Court[db].order(:name).offset(1).pluck(:name).or_panic == ["b", "c"] of ::Ricord::Model::Plucked
+      assert Court[db].order(:name).offset(1).pick(:name).or_panic == "b"
+      a = Account.create(db, name: "acc").or_panic
+      Court.create(db, name: "x", account_id: a.id).or_panic
+      assert a.courts.pluck(:name).or_panic == ["x"] of ::Ricord::Model::Plucked
+    end
+  end
+
+  it "writes the rows as JSON" do
+    with_db do |db|
+      Court.create(db, name: "q\"t\n", rank: 3, score: 2.5, opened_at: Time.utc(2026, 1, 2, 3, 4, 5)).or_panic
+      Court.create(db, name: "n", active: false).or_panic
+      json = String::Builder.new
+      Court[db].order(:id).to_json(json).or_panic
+      text = json.to_s
+      assert text.starts_with?("[{\"id\":1,\"account_id\":null,\"name\":\"q\\\"t\\n\",\"rank\":3,\"score\":2.5,\"active\":true,\"opened_at\":\"2026-01-02")
+      assert text.ends_with?("{\"id\":2,\"account_id\":null,\"name\":\"n\",\"rank\":null,\"score\":null,\"active\":false,\"opened_at\":null}]")
+      empty = String::Builder.new
+      Court[db].where(name: "z").to_json(empty).or_panic
+      assert empty.to_s == "[]"
+      settings = String::Builder.new
+      Setting.create(db, prefs: "{\"a\":1}").or_panic
+      Setting[db].to_json(settings).or_panic
+      assert settings.to_s == "[{\"id\":1,\"prefs\":{\"a\":1},\"photo\":null}]"
+    end
+  end
+end
+
+describe "distinct" do
+  it "selects distinct rows and counts them" do
+    with_db do |db|
+      seed(db)
+      Court.create(db, name: "d", rank: 2).or_panic
+      assert Court[db].order(:rank).distinct.pluck(:rank).or_panic == [nil, 1_i64, 2_i64] of ::Ricord::Model::Plucked
+      assert Court[db].distinct.pluck(:active).or_panic.size == 2
+      assert Court[db].where(rank: 2_i64).distinct.count.or_panic == 2_i64
+      assert db.statements.any?(&.includes?("SELECT DISTINCT `rank` FROM `courts`"))
+      # Distinct whole rows are each row.
+      assert Court[db].distinct.to_a.or_panic.size == 4
+    end
+  end
+end
+
+describe "joins" do
+  it "joins a belongs_to and a has_many on the foreign key" do
+    with_db do |db|
+      a = Account.create(db, name: "a").or_panic
+      b = Account.create(db, name: "b").or_panic
+      Court.create(db, name: "a1", account_id: a.id).or_panic
+      Court.create(db, name: "a2", account_id: a.id).or_panic
+      Court.create(db, name: "b1", account_id: b.id).or_panic
+      Court.create(db, name: "none").or_panic
+      start = db.statements.size
+      names = Court[db].joins(:account).where("`accounts`.`name` = ?", "a").order(:name).pluck(:name).or_panic
+      assert names == ["a1", "a2"] of ::Ricord::Model::Plucked
+      assert db.statements[start..].any?(&.includes?("FROM `courts` INNER JOIN `accounts` ON `accounts`.`id` = `courts`.`account_id` WHERE"))
+      # Own typed conditions and order are qualified: both tables have `name`.
+      assert Court[db].joins(:account).where(name: "b1").count.or_panic == 1_i64
+      assert db.statements.any?(&.includes?("WHERE (`courts`.`name` = ?)"))
+      # INNER: a court without an account is left out.
+      assert Court[db].joins(:account).count.or_panic == 3_i64
+      # has_many: one row per court, distinct accounts.
+      assert Account[db].joins(:courts).count.or_panic == 3_i64
+      assert Account[db].joins(:courts).distinct.count.or_panic == 2_i64
+      assert Account[db].joins(:courts).distinct.order(:name).pluck(:name).or_panic == ["a", "b"] of ::Ricord::Model::Plucked
+      records = Account[db].joins(:courts).where("`courts`.`name` = ?", "b1").to_a.or_panic
+      assert records.size == 1
+      assert records[0].name == "b"
+      found = Account[db].joins(:courts).where("`courts`.`name` = ?", "a2").first.or_panic
+      assert !found.nil? && found.name == "a"
+    end
+  end
+
+  it "joins hop by hop" do
+    with_db do |db|
+      a = Account.create(db, name: "a").or_panic
+      b = Account.create(db, name: "b").or_panic
+      ca = Court.create(db, name: "ca", account_id: a.id).or_panic
+      cb = Court.create(db, name: "cb", account_id: b.id).or_panic
+      Case.create(db, court_id: ca.id, title: "t1").or_panic
+      Case.create(db, court_id: cb.id, title: "t2").or_panic
+      Case.create(db, court_id: cb.id, title: "t3").or_panic
+      names = Account[db].joins(:courts, :cases).where("`cases`.`title` = ?", "t3").pluck(:name).or_panic
+      assert names == ["b"] of ::Ricord::Model::Plucked
+      assert db.statements.any?(&.includes?("INNER JOIN `courts` ON `courts`.`account_id` = `accounts`.`id` INNER JOIN `cases` ON `cases`.`court_id` = `courts`.`id`"))
+      titles = Case[db].joins(:court, :account).where("`accounts`.`name` = ?", "b").order(:title).pluck(:title).or_panic
+      assert titles == ["t2", "t3"] of ::Ricord::Model::Plucked
+    end
+  end
+
+  it "adds the inherited scope to each joined table that has the column" do
+    with_db do |db|
+      a = Account.create(db, name: "a").or_panic
+      b = Account.create(db, name: "b").or_panic
+      court = Court.create(db, name: "x", account_id: a.id).or_panic
+      Case.create(db, court_id: court.id, title: "mine", account_id: a.id).or_panic
+      Case.create(db, court_id: court.id, title: "foreign", account_id: b.id).or_panic
+      # a.courts has the scope (account_id = a); cases has account_id too.
+      titles = a.courts.joins(:cases).order(:id).distinct.pluck(:name).or_panic
+      assert titles == ["x"] of ::Ricord::Model::Plucked
+      assert a.courts.joins(:cases).count.or_panic == 1_i64
+      assert db.statements.any?(&.includes?("INNER JOIN `cases` ON `cases`.`court_id` = `courts`.`id` AND `cases`.`account_id` = ? WHERE (`courts`.`account_id` = ?)"))
+      # Without the scope both cases join.
+      assert Court[db].joins(:cases).count.or_panic == 2_i64
+    end
+  end
+
+  it "leaves the receiver unchanged and keeps the query type" do
+    with_db do |db|
+      a = Account.create(db, name: "café").or_panic
+      Court.create(db, name: "x", account_id: a.id).or_panic
+      Court.create(db, name: "x2", account_id: a.id).or_panic
+      Court.create(db, name: "y").or_panic
+      base = Court[db].where(name: ["x", "y"])
+      joined = base.joins(:account)
+      assert typeof(joined).to_s == Court::Query.to_s
+      assert typeof(base.distinct).to_s == Court::Query.to_s
+      assert typeof(base.offset(1).joins(:account).distinct).to_s == Court::OffsetQuery.to_s
+      assert base.count.or_panic == 2_i64
+      assert joined.count.or_panic == 1_i64
+      assert base.count.or_panic == 2_i64, "an earlier query keeps no joins"
+      # Text survives as written, multi-byte too.
+      assert Account[db].joins(:courts).distinct.pick(:name).or_panic == "café"
+      # An unknown association fails when the query runs.
+      assert Court[db].joins(:nope).count.is_a?(DatabaseError)
+    end
+  end
+
+  it "walks joined rows with each" do
+    with_db do |db|
+      a = Account.create(db, name: "a").or_panic
+      3.times { |k| Court.create(db, name: "c#{k}", account_id: a.id).or_panic }
+      Court.create(db, name: "lone").or_panic
+      ids = [] of Int64
+      Court[db].joins(:account).order(:name).each(batch_size: 2) { |court| ids << court.id; nil }.or_panic
+      assert ids == [1_i64, 2_i64, 3_i64]
+    end
+  end
+end

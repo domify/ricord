@@ -1,0 +1,209 @@
+# M4: bulk writes: delete_all (one DELETE, no callbacks), destroy_all (loads
+# in batches, destroy with callbacks per record, all in one write; a refusing
+# callback rolls everything back), update_all, each through a has_many
+# association and with the inherited scope honoured. Also Grant's
+# collection_methods delete_all/destroy_all.
+module test/bulk_test
+
+import db/db/spec::{describe, it}
+import ricord
+import ricord/model::{model}
+import ricord/sessions::{Session}
+import ricord/failures::{DatabaseError, CallbackError}
+import test/spec_helper::*
+import test/models::*
+
+model Shelf do
+  table :shelves
+  col :name, :string
+  has_many :books
+end
+
+# Leaves a log row when destroyed; refuses when titled "keep".
+model Book do
+  table :books
+  col :shelf_id, :int64, null: true
+  col :title, :string
+  before_destroy :check
+  after_destroy :log_it
+
+  def check : Nil | ::Ricord::Failures::Error
+    title == "keep" ? ::Ricord::Failures::DatabaseError.new(TABLE, "test", "kept") : nil
+  end
+
+  def log_it : Nil | ::Ricord::Failures::Error
+    made = BookLog.create(session, note: "gone #{title}")
+    made.is_a?(::Ricord::Failures::Failure) ? made : nil
+  end
+end
+
+model BookLog do
+  table :book_logs
+  col :note, :string
+end
+
+def with_shelves(& : Session -> Nil) : Nil
+  with_db do |db|
+    Shelf.create_table(db).or_panic
+    Book.create_table(db).or_panic
+    BookLog.create_table(db).or_panic
+    db.release
+    yield db
+  end
+end
+
+def count_of(db : Session, start : Int32, prefix : String) : Int32
+  n = 0
+  db.statements.each_with_index { |s, i| n += 1 if i >= start && s.starts_with?(prefix) }
+  n
+end
+
+describe "delete_all" do
+  it "deletes the matching rows in one DELETE without callbacks" do
+    with_shelves do |db|
+      s = Shelf.create(db, name: "s").or_panic
+      Book.create(db, shelf_id: s.id, title: "a").or_panic
+      Book.create(db, shelf_id: s.id, title: "keep").or_panic
+      Book.create(db, title: "c").or_panic
+      start = db.statements.size
+      assert Book[db].where(shelf_id: s.id).delete_all.or_panic == 2_i64
+      assert count_of(db, start, "DELETE") == 1
+      assert db.statements.any?(&.includes?("DELETE FROM `books` WHERE (`shelf_id` = ?)"))
+      # No callbacks: "keep" went and nothing was logged.
+      assert BookLog[db].count.or_panic == 0_i64
+      assert Book[db].count.or_panic == 1_i64
+      assert Book[db].delete_all.or_panic == 1_i64
+      assert Book[db].delete_all.or_panic == 0_i64
+    end
+  end
+
+  it "deletes through a has_many association and drops its loaded range" do
+    with_shelves do |db|
+      s = Shelf.create(db, name: "s").or_panic
+      o = Shelf.create(db, name: "o").or_panic
+      Book.create(db, shelf_id: s.id, title: "a").or_panic
+      Book.create(db, shelf_id: s.id, title: "b").or_panic
+      Book.create(db, shelf_id: o.id, title: "c").or_panic
+      assert s.books.to_a.or_panic.size == 2
+      assert s.books.delete_all.or_panic == 2_i64
+      assert s.books.to_a.or_panic.empty?
+      assert o.books.count.or_panic == 1_i64
+    end
+  end
+
+  it "uses a subquery with a limit or joins" do
+    with_shelves do |db|
+      s = Shelf.create(db, name: "s").or_panic
+      Shelf.create(db, name: "empty").or_panic
+      3.times { |k| Book.create(db, shelf_id: s.id, title: "b#{k}").or_panic }
+      Book.create(db, title: "loose").or_panic
+      assert Book[db].order(:id).limit(2).delete_all.or_panic == 2_i64
+      assert db.statements.any?(&.includes?("DELETE FROM `books` WHERE `id` IN (SELECT `books`.`id` FROM `books` ORDER BY `id` LIMIT 2)"))
+      assert Book[db].pluck(:title).or_panic == ["b2", "loose"] of ::Ricord::Model::Plucked
+      # Only shelves that have a book.
+      assert Shelf[db].joins(:books).delete_all.or_panic == 1_i64
+      assert Shelf[db].pluck(:name).or_panic == ["empty"] of ::Ricord::Model::Plucked
+    end
+  end
+
+  it "joins the open write inside one" do
+    with_shelves do |db|
+      Book.create(db, title: "a").or_panic
+      db.write do |tx|
+        Book[tx].delete_all.or_panic
+        tx.roll_back
+      end
+      assert Book[db].count.or_panic == 1_i64
+    end
+  end
+end
+
+describe "destroy_all" do
+  it "destroys each row with its callbacks in one write" do
+    with_shelves do |db|
+      s = Shelf.create(db, name: "s").or_panic
+      5.times { |k| Book.create(db, shelf_id: s.id, title: "b#{k}").or_panic }
+      Book.create(db, title: "other").or_panic
+      start = db.statements.size
+      assert Book[db].where(shelf_id: s.id).destroy_all(batch_size: 2).or_panic == 5_i64
+      assert count_of(db, start, "BEGIN IMMEDIATE") == 1
+      assert count_of(db, start, "COMMIT") == 1
+      assert count_of(db, start, "DELETE FROM `books`") == 5
+      # Batches of two: 2 + 2 + 1, in id order.
+      assert count_of(db, start, "SELECT `id`, `shelf_id`, `title` FROM `books`") == 3
+      notes = BookLog[db].order(:id).pluck(:note).or_panic
+      assert notes == ["gone b0", "gone b1", "gone b2", "gone b3", "gone b4"] of ::Ricord::Model::Plucked
+      assert Book[db].pluck(:title).or_panic == ["other"] of ::Ricord::Model::Plucked
+      assert Book[db].where(title: "none").destroy_all.or_panic == 0_i64
+    end
+  end
+
+  it "rolls everything back when a callback refuses" do
+    with_shelves do |db|
+      Book.create(db, title: "a").or_panic
+      Book.create(db, title: "keep").or_panic
+      Book.create(db, title: "c").or_panic
+      refused = Book[db].destroy_all
+      assert refused.is_a?(CallbackError)
+      assert Book[db].count.or_panic == 3_i64
+      assert BookLog[db].count.or_panic == 0_i64
+    end
+  end
+
+  it "destroys through a has_many association" do
+    with_shelves do |db|
+      s = Shelf.create(db, name: "s").or_panic
+      o = Shelf.create(db, name: "o").or_panic
+      Book.create(db, shelf_id: s.id, title: "a").or_panic
+      Book.create(db, shelf_id: o.id, title: "b").or_panic
+      assert s.books.count.or_panic == 1_i64
+      assert s.books.to_a.or_panic.size == 1
+      assert s.books.destroy_all.or_panic == 1_i64
+      assert s.books.to_a.or_panic.empty?
+      assert o.books.count.or_panic == 1_i64
+      assert BookLog[db].pluck(:note).or_panic == ["gone a"] of ::Ricord::Model::Plucked
+    end
+  end
+
+  it "joins the open write as a savepoint" do
+    with_shelves do |db|
+      Book.create(db, title: "a").or_panic
+      Book.create(db, title: "b").or_panic
+      db.write do |tx|
+        assert Book[tx].destroy_all.or_panic == 2_i64
+        tx.roll_back
+      end
+      assert Book[db].count.or_panic == 2_i64
+      assert BookLog[db].count.or_panic == 0_i64
+    end
+  end
+end
+
+describe "bulk writes and the inherited scope" do
+  it "keeps delete_all, destroy_all and update_all inside the scope" do
+    with_db do |db|
+      a = Account.create(db, name: "a").or_panic
+      b = Account.create(db, name: "b").or_panic
+      court = Court.create(db, name: "x", account_id: a.id).or_panic
+      Case.create(db, court_id: court.id, title: "mine1", account_id: a.id).or_panic
+      Case.create(db, court_id: court.id, title: "mine2", account_id: a.id).or_panic
+      # Same court, another account: outside the scope.
+      Case.create(db, court_id: court.id, title: "foreign", account_id: b.id).or_panic
+      scoped = a.courts.first.or_panic
+      if scoped
+        assert scoped.cases.update_all(title: "renamed").or_panic == 2_i64
+        assert Case[db].where(title: "foreign").count.or_panic == 1_i64
+        assert scoped.cases.where(title: "renamed").delete_all.or_panic == 2_i64
+        assert db.statements.any?(&.includes?("DELETE FROM `cases` WHERE ((`title` = ?)) AND (`court_id` = ?) AND (`account_id` = ?)"))
+        assert Case[db].count.or_panic == 1_i64
+        Case.create(db, court_id: court.id, title: "mine3", account_id: a.id).or_panic
+        assert scoped.cases.destroy_all.or_panic == 1_i64
+        assert Case[db].pluck(:title).or_panic == ["foreign"] of ::Ricord::Model::Plucked
+      end
+      # Courts of account b: none, so nothing goes.
+      assert b.courts.delete_all.or_panic == 0_i64
+      assert a.courts.update_all(rank: 7).or_panic == 1_i64
+      assert Court[db].find(court.id).or_panic.rank == 7_i64
+    end
+  end
+end

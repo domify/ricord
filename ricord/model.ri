@@ -38,8 +38,24 @@ pub def push_db(args : Array(DBValue), value : Value, store : Store, dialect : D
   nil
 end
 
+# Marks a column name in a typed condition's text: replaced by the table
+# qualifier (`` `courts`. ``) when the query joins, by nothing otherwise.
+pub QUALIFY = '\u0001'
+
+# Appends *text* with every `QUALIFY` mark replaced by *prefix*.
+pub def qualified(text : String, prefix : String, sql : String::Builder) : Nil
+  text.each_char do |ch|
+    if ch == QUALIFY
+      sql << prefix
+    else
+      sql << ch
+    end
+  end
+  nil
+end
+
 # The WHERE text and binds of a node chain ending at *last*, appended.
-pub def where_sql(store : Store, last : Int32, sql : String::Builder, binds : Array(DBValue), dialect : Dialect) : Nil
+pub def where_sql(store : Store, last : Int32, sql : String::Builder, binds : Array(DBValue), dialect : Dialect, prefix : String = "") : Nil
   return nil if last < 0
   chain = [] of Int32
   at = last
@@ -59,42 +75,157 @@ pub def where_sql(store : Store, last : Int32, sql : String::Builder, binds : Ar
     else
       sql << " AND ("
     end
-    sql << store.span_text(node.sql) << ')'
+    qualified(store.span_text(node.sql), prefix, sql)
+    sql << ')'
     node.bind_count.times { |b| push_db(binds, store.binds[node.bind_start + b], store, dialect) }
   end
   nil
 end
 
 # The WHERE text of a node chain plus the inherited scope starting at *scope*
-# (-1 for none): `WHERE (<chain>) AND (`c` = ?) ...`.
-pub def scoped_where_sql(store : Store, last : Int32, scope : Int32, columns : Array(String), sql : String::Builder, binds : Array(DBValue), dialect : Dialect) : Nil
-  if scope < 0 || store.scope_cols[scope] < 0
-    where_sql(store, last, sql, binds, dialect)
+# (-1 for none): `WHERE (<chain>) AND (`c` = ?) ...`. *prefix* qualifies the
+# columns (a query with joins); *extra* is one more condition (a keyset) with
+# its binds.
+pub def scoped_where_sql(store : Store, last : Int32, scope : Int32, columns : Array(String), sql : String::Builder, binds : Array(DBValue), dialect : Dialect, prefix : String = "", extra : String = "", extra_binds : Array(DBValue) | Nil = nil) : Nil
+  has_scope = scope >= 0 && store.scope_cols[scope] >= 0
+  if !has_scope && extra.empty?
+    where_sql(store, last, sql, binds, dialect, prefix)
     return nil
   end
   if last >= 0
     inner = String::Builder.new
-    where_sql(store, last, inner, binds, dialect)
+    where_sql(store, last, inner, binds, dialect, prefix)
     text = inner.to_s
     sql << " WHERE (" << text[7, text.bytesize - 7] << ")"
   else
     sql << " WHERE "
   end
-  at = scope
   first = last < 0
-  while store.scope_cols[at] >= 0
-    sql << " AND " unless first
-    first = false
-    value = store.scope_vals[at]
-    if value.nil?
-      sql << "(`" << columns[store.scope_cols[at]] << "` IS NULL)"
-    else
-      sql << "(`" << columns[store.scope_cols[at]] << "` = ?)"
-      push_db(binds, value, store, dialect)
+  if has_scope
+    at = scope
+    while store.scope_cols[at] >= 0
+      sql << " AND " unless first
+      first = false
+      value = store.scope_vals[at]
+      if value.nil?
+        sql << '(' << prefix << '`' << columns[store.scope_cols[at]] << "` IS NULL)"
+      else
+        sql << '(' << prefix << '`' << columns[store.scope_cols[at]] << "` = ?)"
+        push_db(binds, value, store, dialect)
+      end
+      at += 1
     end
-    at += 1
+  end
+  unless extra.empty?
+    sql << " AND " unless first
+    sql << '(' << extra << ')'
+    extra_binds.each { |b| binds << b } if extra_binds
   end
   nil
+end
+
+# The INNER JOIN texts of a join chain ending at *last* (nodes as in `wheres`,
+# their binds the joined tables' scope values), appended in order.
+pub def join_sql(store : Store, last : Int32, sql : String::Builder, binds : Array(DBValue), dialect : Dialect) : Nil
+  return nil if last < 0
+  chain = [] of Int32
+  at = last
+  while at >= 0
+    chain << at
+    at = store.wheres[at].prev
+  end
+  chain.reverse.each do |node_index|
+    node = store.wheres[node_index]
+    sql << store.span_text(node.sql)
+    node.bind_count.times { |b| push_db(binds, store.binds[node.bind_start + b], store, dialect) }
+  end
+  nil
+end
+
+# The keyset condition after the last row of a batch: for order columns
+# c0, c1, ... (*desc* per column) and the last row's *keys*,
+# `(c0 > ?) OR (c0 = ? AND c1 > ?) OR ...` (`<` for a descending column).
+pub def keyset_sql(prefix : String, columns : Array(String), cols : Array(Int32), desc : Array(Bool), keys : Array(Value), kstore : Store, sql : String::Builder, binds : Array(DBValue), dialect : Dialect) : Nil
+  cols.size.times do |i|
+    sql << " OR " if i > 0
+    sql << '('
+    i.times do |j|
+      sql << prefix << '`' << columns[cols[j]] << "` = ? AND "
+      push_db(binds, keys[j], kstore, dialect)
+    end
+    sql << prefix << '`' << columns[cols[i]] << (desc[i] ? "` < ?" : "` > ?") << ')'
+    push_db(binds, keys[i], kstore, dialect)
+  end
+  nil
+end
+
+# Copies the slot values of record *index* at *cols* into *keys*, text into
+# *kstore* (the batch store holding them goes away with its batch).
+pub def copy_keys(batch : Store, index : Int32, cols : Array(Int32), keys : Array(Value), kstore : Store) : Nil
+  keys.clear
+  cols.each do |col|
+    v = batch.slot(index, col)
+    case v
+    when TextSpan then keys << kstore.add_text(batch.span_text(v))
+    when Int64    then keys << v + 0_i64
+    when Float64  then keys << v + 0.0
+    when Bool     then keys << (v == true)
+    when Time     then keys << v.to_utc
+    else               keys << nil
+    end
+  end
+  nil
+end
+
+# Copies the scope pairs starting at *scope* in *from* into *to*: the new
+# scope's start there, -1 for none.
+pub def copy_scope(from : Store, to : Store, scope : Int32) : Int32
+  return -1 if scope < 0
+  start = to.scope_cols.size
+  at = scope
+  while from.scope_cols[at] >= 0
+    v = from.scope_vals[at]
+    to.add_scope_pair(from.scope_cols[at], v.is_a?(TextSpan) ? to.add_text(from.span_text(v)) : v)
+    at += 1
+  end
+  to.end_scope
+  start
+end
+
+# Appends *text* as a JSON string.
+pub def json_string(text : String, into : String::Builder) : Nil
+  into << '"'
+  text.each_char do |ch|
+    case ch
+    when '"'  then into << "\\\""
+    when '\\' then into << "\\\\"
+    when '\n' then into << "\\n"
+    when '\r' then into << "\\r"
+    when '\t' then into << "\\t"
+    else
+      if ch.ord < 0x20
+        into << "\\u00" << "0123456789abcdef"[ch.ord >> 4, 1] << "0123456789abcdef"[ch.ord & 0xF, 1]
+      else
+        into << ch
+      end
+    end
+  end
+  into << '"'
+  nil
+end
+
+# A plucked value: the column's getter type (text as a view of the session's
+# store; JSON and BLOB columns as their text).
+pub alias Plucked = String | Int64 | Float64 | Bool | Time | Nil
+
+# Slot *slot* of record *index* as a plucked value (text as a store view).
+pub def plucked(store : Store, index : Int32, slot : Int32) : Plucked
+  v = store.slot(index, slot)
+  case v
+  when TextSpan then store.span_text(v)
+  when ByteSpan then nil
+  else               v
+  end
 end
 
 # Starts a scope for a has_many query: (fk, owner id), then the owner's own
@@ -151,7 +282,7 @@ end
 
 # The ORDER BY text of an order chain ending at *last*.
 # With *flip* every direction is reversed (for `last`).
-pub def order_sql(store : Store, last : Int32, columns : Array(String), sql : String::Builder, flip : Bool = false) : Nil
+pub def order_sql(store : Store, last : Int32, columns : Array(String), sql : String::Builder, flip : Bool = false, prefix : String = "") : Nil
   return nil if last < 0
   chain = [] of Int32
   at = last
@@ -163,7 +294,7 @@ pub def order_sql(store : Store, last : Int32, columns : Array(String), sql : St
   chain.reverse.each_with_index do |node_index, i|
     node = store.orders[node_index]
     sql << ", " if i > 0
-    sql << '`' << columns[node.column] << '`'
+    sql << prefix << '`' << columns[node.column] << '`'
     sql << " DESC" if node.desc != flip
   end
   nil
@@ -188,7 +319,7 @@ pub def where_conds(store : Store, op : UInt8, last : Int32, conds : T) : Int32 
     next if value.is_a?(Skip)
     next if value.is_a?(Range) && value.begin.nil? && value.end.nil?
     text << " AND " unless text.bytesize == 0
-    column = "`#{key}`"
+    column = "#{QUALIFY}`#{key}`"
     if value.nil?
       text << column << " IS NULL"
     elsif value.is_a?(Array)
@@ -434,6 +565,8 @@ pub macro model(name, &block)
     ASSOCIATION_COUNT = {{assocs.size}}
     # Which columns are BLOBs: they bind as hex text through `unhex(?)`.
     BLOB_COLUMNS = [false, {% for c in cols %}{{types[c.args[1].id.stringify] == "::Ricord::Blob::Blob"}}, {% end %}]
+    # Which columns allow NULL: `each` refuses to order by one.
+    NULLABLE = [false, {% for c in cols %}{{c.named_args && c.named_args.any? { |na| na.name.stringify == "null" && na.value } ? true : false}}, {% end %}]
 
     def initialize(@session : ::Ricord::Sessions::Session, @store : ::Ricord::Storage::Store, @index : Int32)
     end
@@ -1043,8 +1176,14 @@ pub macro model(name, &block)
       new(db, **attrs).save
     end
 
+    # `Query` and `OffsetQuery` from one body: `offset(n)` returns an
+    # `OffsetQuery`, which reads (`to_a`, `first`, `count`, `pluck`, ...) but
+    # has no `each`, `offset`, `build`, `create`, `update_all`, `delete_all` or
+    # `destroy_all` (doc/DESIGN.md, M1 item 8 and M4 item 1).
+    {% for qt in ["Query", "OffsetQuery"] %}
+    {% full = qt == "Query" %}
     @[OnTape]
-    pub struct Query
+    pub struct {{qt.id}}
       getter session : ::Ricord::Sessions::Session
       getter last_where : Int32
       getter last_order : Int32
@@ -1064,64 +1203,110 @@ pub macro model(name, &block)
       # The inherited scope: start in the store's scope pairs, -1 for none
       # (`Model[db]`).
       getter scope : Int32
+      # The last node of the join chain (`joins`), -1 for none; `distinct`
+      # selects distinct rows.
+      getter last_join : Int32
+      getter distinct_rows : Bool
 
-      def initialize(@session : ::Ricord::Sessions::Session, @last_where : Int32, @last_order : Int32, @limit_value : Int64 | Nil, @offset_value : Int64 | Nil, @includes : Int64 = 0_i64, @owner : Int32 = -1, @owner_assoc : Int32 = -1, @owner_fk : Int32 = -1, @bare : Bool = false, @scope : Int32 = -1)
+      def initialize(@session : ::Ricord::Sessions::Session, @last_where : Int32, @last_order : Int32, @limit_value : Int64 | Nil, @offset_value : Int64 | Nil, @includes : Int64 = 0_i64, @owner : Int32 = -1, @owner_assoc : Int32 = -1, @owner_fk : Int32 = -1, @bare : Bool = false, @scope : Int32 = -1, @last_join : Int32 = -1, @distinct_rows : Bool = false)
       end
 
-      private def chain(last_where : Int32, last_order : Int32, limit_value : Int64 | Nil, offset_value : Int64 | Nil) : Query
-        Query.new(session, last_where, last_order, limit_value, offset_value, @includes, @owner, @owner_assoc, @owner_fk, false, @scope)
+      private def chain(last_where : Int32, last_order : Int32, limit_value : Int64 | Nil, offset_value : Int64 | Nil) : {{qt.id}}
+        {{qt.id}}.new(session, last_where, last_order, limit_value, offset_value, @includes, @owner, @owner_assoc, @owner_fk, false, @scope, @last_join, @distinct_rows)
       end
 
       # Preloads the named associations of the records this query reads.
-      def includes(*names : Symbol) : Query
+      def includes(*names : Symbol) : {{qt.id}}
         bits = @includes
         names.each do |n|
           a = {{name.id}}.association_index(n)
           bits |= 1_i64 << a if a >= 0
         end
-        Query.new(session, @last_where, @last_order, @limit_value, @offset_value, bits, @owner, @owner_assoc, @owner_fk, @bare, @scope)
+        {{qt.id}}.new(session, @last_where, @last_order, @limit_value, @offset_value, bits, @owner, @owner_assoc, @owner_fk, @bare, @scope, @last_join, @distinct_rows)
       end
 
       # A typed condition per column given; `Array` is IN, `Range` is between.
-      def where(*, id : Int64 | Int32 | Array(Int64) | Nil | ::Ricord::Values::Skip = ::Ricord::Values::SKIP, {% for c in cols %}{% t = types[c.args[1].id.stringify] %}{% unless t.starts_with?("::Ricord::") %}{{c.args[0].id}} : {{t.id}}{% if t == "Int64" %} | Int32{% end %} | Array({{t.id}}){% if t == "Int64" || t == "Float64" %} | Range({{t.id}}, {{t.id}}) | Range(Nil, {{t.id}}) | Range({{t.id}}, Nil) | Range(Nil, Nil){% end %} | Nil | ::Ricord::Values::Skip = ::Ricord::Values::SKIP, {% end %}{% end %}) : Query
+      def where(*, id : Int64 | Int32 | Array(Int64) | Nil | ::Ricord::Values::Skip = ::Ricord::Values::SKIP, {% for c in cols %}{% t = types[c.args[1].id.stringify] %}{% unless t.starts_with?("::Ricord::") %}{{c.args[0].id}} : {{t.id}}{% if t == "Int64" %} | Int32{% end %} | Array({{t.id}}){% if t == "Int64" || t == "Float64" %} | Range({{t.id}}, {{t.id}}) | Range(Nil, {{t.id}}) | Range({{t.id}}, Nil) | Range(Nil, Nil){% end %} | Nil | ::Ricord::Values::Skip = ::Ricord::Values::SKIP, {% end %}{% end %}) : {{qt.id}}
         where_any(0_u8, id: id, {% for c in cols %}{% unless types[c.args[1].id.stringify].starts_with?("::Ricord::") %}{{c.args[0].id}}: {{c.args[0].id}}, {% end %}{% end %})
       end
 
-      def or_where(*, id : Int64 | Int32 | Array(Int64) | Nil | ::Ricord::Values::Skip = ::Ricord::Values::SKIP, {% for c in cols %}{% t = types[c.args[1].id.stringify] %}{% unless t.starts_with?("::Ricord::") %}{{c.args[0].id}} : {{t.id}}{% if t == "Int64" %} | Int32{% end %} | Array({{t.id}}){% if t == "Int64" || t == "Float64" %} | Range({{t.id}}, {{t.id}}) | Range(Nil, {{t.id}}) | Range({{t.id}}, Nil) | Range(Nil, Nil){% end %} | Nil | ::Ricord::Values::Skip = ::Ricord::Values::SKIP, {% end %}{% end %}) : Query
+      def or_where(*, id : Int64 | Int32 | Array(Int64) | Nil | ::Ricord::Values::Skip = ::Ricord::Values::SKIP, {% for c in cols %}{% t = types[c.args[1].id.stringify] %}{% unless t.starts_with?("::Ricord::") %}{{c.args[0].id}} : {{t.id}}{% if t == "Int64" %} | Int32{% end %} | Array({{t.id}}){% if t == "Int64" || t == "Float64" %} | Range({{t.id}}, {{t.id}}) | Range(Nil, {{t.id}}) | Range({{t.id}}, Nil) | Range(Nil, Nil){% end %} | Nil | ::Ricord::Values::Skip = ::Ricord::Values::SKIP, {% end %}{% end %}) : {{qt.id}}
         where_any(1_u8, id: id, {% for c in cols %}{% unless types[c.args[1].id.stringify].starts_with?("::Ricord::") %}{{c.args[0].id}}: {{c.args[0].id}}, {% end %}{% end %})
       end
 
-      private def where_any(op : UInt8, **conds) : Query
+      private def where_any(op : UInt8, **conds) : {{qt.id}}
         node = ::Ricord::Model.where_conds(session.store, op, @last_where, conds)
         chain(node, @last_order, @limit_value, @offset_value)
       end
 
       # A raw condition with `?` binds.
-      def where(sql : String, *binds) : Query
+      def where(sql : String, *binds) : {{qt.id}}
         node = ::Ricord::Model.where_raw(session.store, @last_where, sql, binds)
         chain(node, @last_order, @limit_value, @offset_value)
       end
 
-      def order(*cols : Symbol) : Query
+      def order(*cols : Symbol) : {{qt.id}}
         chain(@last_where, ::Ricord::Model.order_cols(session.store, @last_order, COLUMNS, cols), @limit_value, @offset_value)
       end
 
-      def order(**cols) : Query
+      def order(**cols) : {{qt.id}}
         chain(@last_where, ::Ricord::Model.order_dirs(session.store, @last_order, COLUMNS, cols), @limit_value, @offset_value)
       end
 
-      def limit(n : Int64 | Int32) : Query
+      def limit(n : Int64 | Int32) : {{qt.id}}
         chain(@last_where, @last_order, n.to_i64, @offset_value)
       end
 
-      def offset(n : Int64 | Int32) : Query
-        chain(@last_where, @last_order, @limit_value, n.to_i64)
+      {% if full %}
+        def offset(n : Int64 | Int32) : OffsetQuery
+          OffsetQuery.new(session, @last_where, @last_order, @limit_value, n.to_i64, @includes, @owner, @owner_assoc, @owner_fk, false, @scope, @last_join, @distinct_rows)
+        end
+      {% end %}
+
+      # Distinct rows: `SELECT DISTINCT`.
+      def distinct : {{qt.id}}
+        {{qt.id}}.new(session, @last_where, @last_order, @limit_value, @offset_value, @includes, @owner, @owner_assoc, @owner_fk, false, @scope, @last_join, true)
+      end
+
+      # An INNER JOIN per association, hop by hop: `joins(:courts, :cases)`
+      # from Account joins courts on accounts, then cases on courts. Each
+      # joined table gets the query's scope pairs whose column it has
+      # (the association's column maps composed hop by hop).
+      def joins(*names : Symbol) : {{qt.id}}
+        store = session.store
+        list = [] of Symbol
+        names.each { |n| list << n }
+        map = [] of Int32
+        if @scope >= 0
+          at = @scope
+          while store.scope_cols[at] >= 0
+            map << store.scope_cols[at]
+            at += 1
+          end
+        end
+        text = String::Builder.new
+        start = store.binds.size
+        {{name.id}}.__join(list, 0, store, map, @scope, text)
+        node = store.add_where(@last_join, 0_u8, text.to_s, start, store.binds.size - start)
+        {{qt.id}}.new(session, @last_where, @last_order, @limit_value, @offset_value, @includes, @owner, @owner_assoc, @owner_fk, false, @scope, node, @distinct_rows)
+      end
+
+      # The column qualifier: `` `table`. `` when the query joins.
+      def prefix : String
+        @last_join >= 0 ? "`#{TABLE}`." : ""
+      end
+
+      # COLUMNS as a select list.
+      def select_list : String
+        p = prefix
+        COLUMNS.map { |c| "#{p}`#{c}`" }.join(", ")
       end
 
       def build_sql(selection : String, sql : String::Builder, args : Array(::Db::Value::DBValue), flip : Bool = false) : Nil
-        sql << "SELECT " << selection << " FROM `" << TABLE << '`'
-        ::Ricord::Model.scoped_where_sql(session.store, @last_where, @scope, COLUMNS, sql, args, session.dialect)
-        ::Ricord::Model.order_sql(session.store, @last_order, COLUMNS, sql, flip)
+        sql << "SELECT " << (@distinct_rows ? "DISTINCT " : "") << selection << " FROM `" << TABLE << '`'
+        ::Ricord::Model.join_sql(session.store, @last_join, sql, args, session.dialect)
+        ::Ricord::Model.scoped_where_sql(session.store, @last_where, @scope, COLUMNS, sql, args, session.dialect, prefix)
+        ::Ricord::Model.order_sql(session.store, @last_order, COLUMNS, sql, flip, prefix)
         session.dialect.limit_offset(@limit_value, @offset_value, sql)
         nil
       end
@@ -1142,12 +1327,8 @@ pub macro model(name, &block)
         # The preloads run before the result array exists: a loader reads
         # through another model's query, which may come back here.
         if count > 0 && @includes != 0_i64
-          ASSOCIATION_COUNT.times do |a|
-            if (@includes & (1_i64 << a)) != 0_i64
-              loaded = {{name.id}}.__preload(s, first, count, a)
-              return loaded if loaded.is_a?(::Ricord::Failures::DatabaseError)
-            end
-          end
+          loaded = {{name.id}}.__preload_all(s, first, count, @includes)
+          return loaded if loaded.is_a?(::Ricord::Failures::DatabaseError)
         end
         records = [] of {{name.id}}
         count.times { |k| records << {{name.id}}.new(s, s.store, first + k) }
@@ -1161,27 +1342,10 @@ pub macro model(name, &block)
         s = session
         sql = String::Builder.new
         args = [] of ::Db::Value::DBValue
-        build_sql(COLUMNS.map { |c| "`#{c}`" }.join(", "), sql, args)
+        build_sql(select_list, sql, args)
         first = s.store.size
-        failed = s.query(sql.to_s, args) do |rs|
-          problem = nil
-          while true
-            m = ::Ricord::Model.advance(rs, TABLE)
-            if m.is_a?(::Ricord::Failures::DatabaseError)
-              problem = m
-              break
-            end
-            break unless m
-            index = s.store.add_record(MODEL_ID, COLUMNS.size, ASSOCIATION_COUNT)
-            read = {{name.id}}.read_row(s.store, index, rs, s.dialect)
-            problem = read if read.is_a?(::Ricord::Failures::DatabaseError)
-            s.store.scopes[index] = @scope
-          end
-          problem
-        end
-        return failed if failed.is_a?(::Ricord::Failures::DatabaseError)
-        count = s.store.size - first
-        ::Ricord::Associations.mark_group(s.store, first, count)
+        count = {{name.id}}.read_into(s, sql.to_s, args, @scope)
+        return count if count.is_a?(::Ricord::Failures::DatabaseError)
         if @bare && @owner >= 0
           start = s.store.links.size
           count.times { |k| s.store.links << first + k }
@@ -1200,7 +1364,7 @@ pub macro model(name, &block)
         query = query.limit(1)
         sql = String::Builder.new
         args = [] of ::Db::Value::DBValue
-        query.build_sql(COLUMNS.map { |c| "`#{c}`" }.join(", "), sql, args, flip)
+        query.build_sql(select_list, sql, args, flip)
         s = session
         s.query(sql.to_s, args) do |rs|
           m = ::Ricord::Model.advance(rs, TABLE)
@@ -1250,12 +1414,12 @@ pub macro model(name, &block)
       def count : Int64 | ::Ricord::Failures::DatabaseError
         sql = String::Builder.new
         args = [] of ::Db::Value::DBValue
-        if @limit_value.nil? && @offset_value.nil?
+        if @limit_value.nil? && @offset_value.nil? && !@distinct_rows
           build_sql("count(*)", sql, args)
         else
-          # A limit or offset bounds the rows counted, so count a subquery.
+          # A limit, offset or DISTINCT bounds the rows counted, so count a subquery.
           inner = String::Builder.new
-          build_sql("1", inner, args)
+          build_sql(@distinct_rows ? select_list : "1", inner, args)
           sql << "SELECT count(*) FROM (" << inner.to_s << ')'
         end
         session.scalar(sql.to_s, Int64, args)
@@ -1282,55 +1446,458 @@ pub macro model(name, &block)
         found.is_a?(::Ricord::Failures::DatabaseError) ? found : !found
       end
 
-      # A new unsaved record. Through a has_many query the foreign key is set
-      # to the owner's id, and the owner's loaded range is dropped so the next
-      # read sees the record. Named `build`, not `new`: ris treats an instance
-      # method `new` as in-place construction, which may not grow the store.
-      # Through a scoped query the scope columns are set and the record keeps
-      # the scope.
-      def build(**attrs) : {{name.id}}
-        index = {{name.id}}.new(session, **attrs).index
-        if @owner >= 0
-          session.store.set_slot(index, @owner_fk, session.store.slot(@owner, 0))
-          ::Ricord::Associations.unload(session.store, @owner, @owner_assoc)
-        end
-        ::Ricord::Model.apply_scope(session.store, index, @scope)
-        session.store.scopes[index] = @scope
-        {{name.id}}.new(session, session.store, index)
-      end
-
-      def create(**attrs) : {{name.id}} | ::Ricord::Failures::Error
-        build(**attrs).save
-      end
-
-      # One `UPDATE` of the given columns over the matching rows (the scope
-      # included), no callbacks: the rows changed. Its own write unless inside one.
-      def update_all(**cols) : Int64 | ::Ricord::Failures::DatabaseError
-        s = session
-        sets = ""
-        args = [] of ::Db::Value::DBValue
-        cols.each do |key, value|
-          col = {{name.id}}.column_index(key)
-          sets << ", " unless sets.empty?
-          sets << '`' << COLUMNS[col] << (BLOB_COLUMNS[col] ? "` = unhex(?)" : "` = ?")
-          ::Ricord::Model.push_db(args, ::Ricord::Model.bind_value(s.store, value), s.store, s.dialect)
-        end
-        return 0_i64 if sets.empty?
-        sql = String::Builder.new
-        sql << "UPDATE `" << TABLE << "` SET " << sets
-        ::Ricord::Model.scoped_where_sql(s.store, @last_where, @scope, COLUMNS, sql, args, s.dialect)
-        text = sql.to_s
-        return s.run(text, args) if s.state.depth > 0
-        written = s.write { |tx| tx.exec(text, args) }
-        # Its own write queues no after-commit item, so only the UPDATE fails.
-        return written if written.is_a?(Int64) || written.is_a?(::Ricord::Failures::DatabaseError)
-        ::Ricord::Failures::DatabaseError.new(TABLE, "update_all", written.message)
-      end
-
       # The number of rows, as `count`.
       def size : Int64 | ::Ricord::Failures::DatabaseError
         count
       end
+
+      # The values of the named columns: one column gives an Array of values,
+      # several an Array of tuples. Values are `Ricord::Model::Plucked`; text
+      # is a view of the session's store. `into:` takes a typed array.
+      def pluck(*cols : *T) forall T
+        # (A local made inside a macro branch is not seen outside it.)
+        \{% if T.size == 1 %}
+          rows = [] of ::Ricord::Model::Plucked
+          got = pluck(*cols, into: rows)
+          return got if got.is_a?(::Ricord::Failures::DatabaseError)
+          rows
+        \{% else %}
+          rows = [] of Tuple(\{% for i in 0...T.size %}::Ricord::Model::Plucked, \{% end %})
+          got = pluck(*cols, into: rows)
+          return got if got.is_a?(::Ricord::Failures::DatabaseError)
+          rows
+        \{% end %}
+      end
+
+      # Appends a value (one column) or a tuple (several) per row to *into*,
+      # each value cast to *into*'s element type (a wrong type panics): the
+      # number of rows appended.
+      def pluck(*cols : *T, into : Array(R)) : Int64 | ::Ricord::Failures::DatabaseError forall T, R
+        s = session
+        idx = [] of Int32
+        cols.each do |c|
+          i = {{name.id}}.column_index(c)
+          return ::Ricord::Failures::DatabaseError.new(TABLE, "pluck", "unknown column #{c}") if i < 0
+          idx << i
+        end
+        p = prefix
+        sql = String::Builder.new
+        args = [] of ::Db::Value::DBValue
+        build_sql(idx.map { |i| "#{p}`#{COLUMNS[i]}`" }.join(", "), sql, args)
+        s.query(sql.to_s, args) do |rs|
+          n = 0_i64
+          problem = nil
+          while true
+            m = ::Ricord::Model.advance(rs, TABLE)
+            if m.is_a?(::Ricord::Failures::DatabaseError)
+              problem = m
+              break
+            end
+            break unless m
+            \{% if T.size == 1 %}
+              into << {{name.id}}.__pluck_value(s, rs, idx[0]).as(R)
+            \{% else %}
+              \{% for i in 0...T.size %}
+                v\{{i}} = {{name.id}}.__pluck_value(s, rs, idx[\{{i}}])
+              \{% end %}
+              into << { \{% for i in 0...T.size %}v\{{i}}.as(\{{R.type_vars[i]}}), \{% end %} }
+            \{% end %}
+            n += 1
+          end
+          problem.nil? ? n : problem
+        end
+      end
+
+      # The first row as `pluck` would give it, or nil.
+      def pick(*cols : *T) forall T
+        limit(1).__pick(*cols)
+      end
+
+      # `pick` on a query already limited to one row. The row is read into a
+      # record of the store first and the values returned as its views: a
+      # def can return neither an element of an array it made nor text made
+      # in a block.
+      def __pick(*cols : *T) forall T
+        s = session
+        idx = [] of Int32
+        cols.each { |c| idx << {{name.id}}.column_index(c) }
+        p = prefix
+        sql = String::Builder.new
+        args = [] of ::Db::Value::DBValue
+        build_sql(idx.map { |i| i < 0 ? "NULL" : "#{p}`#{COLUMNS[i]}`" }.join(", "), sql, args)
+        holder = s.store.add_record(MODEL_ID, idx.size, 0)
+        found = s.query(sql.to_s, args) do |rs|
+          m = ::Ricord::Model.advance(rs, TABLE)
+          if m.is_a?(::Ricord::Failures::DatabaseError)
+            m
+          elsif m
+            idx.size.times { |k| {{name.id}}.__pluck_slot(s, rs, idx[k], holder, k) }
+            true
+          else
+            false
+          end
+        end
+        return found if found.is_a?(::Ricord::Failures::DatabaseError)
+        return nil unless found
+        \{% if T.size == 1 %}
+          ::Ricord::Model.plucked(s.store, holder, 0)
+        \{% else %}
+          { \{% for i in 0...T.size %}::Ricord::Model.plucked(s.store, holder, \{{i}}), \{% end %} }
+        \{% end %}
+      end
+
+      # The rows as a JSON array of objects, column name => value, appended
+      # to *into*. A JSON column is embedded as JSON, a BLOB as hex text.
+      def to_json(into : String::Builder) : Nil | ::Ricord::Failures::DatabaseError
+        s = session
+        sql = String::Builder.new
+        args = [] of ::Db::Value::DBValue
+        build_sql(select_list, sql, args)
+        done = s.query(sql.to_s, args) do |rs|
+          into << '['
+          first = true
+          problem = nil
+          while true
+            m = ::Ricord::Model.advance(rs, TABLE)
+            if m.is_a?(::Ricord::Failures::DatabaseError)
+              problem = m
+              break
+            end
+            break unless m
+            into << ',' unless first
+            first = false
+            {{name.id}}.__json_row(rs, into)
+          end
+          into << ']'
+          problem
+        end
+        done.is_a?(::Ricord::Failures::DatabaseError) ? done : nil
+      end
+
+      {% if full %}
+        # Every row, *batch_size* at a time: keyset batches on the order
+        # columns plus id, each batch read into its own store (records,
+        # load group and preloads), freed when the next batch starts. `limit`
+        # caps the total. A yielded record cannot be kept past the block.
+        # An order column that allows NULL is refused (use `pluck` or `to_a`).
+        def each(batch_size : Int32 = 1000, & : {{name.id}} -> Nil) : Nil | ::Ricord::Failures::DatabaseError
+          walked = __walk(batch_size) do |record|
+            yield record
+            nil
+          end
+          walked.is_a?(::Ricord::Failures::DatabaseError) ? walked : nil
+        end
+
+        # `each` whose block may stop the walk by returning a failure, which
+        # is returned.
+        def __walk(batch_size : Int32, & : {{name.id}} -> Nil | ::Ricord::Failures::Error) : Nil | ::Ricord::Failures::Error
+          s = session
+          ocols = [] of Int32
+          odesc = [] of Bool
+          at = @last_order
+          while at >= 0
+            ocols.unshift(s.store.orders[at].column)
+            odesc.unshift(s.store.orders[at].desc)
+            at = s.store.orders[at].prev
+          end
+          ocols.each do |c|
+            return ::Ricord::Failures::DatabaseError.new(TABLE, "each", "order column #{COLUMNS[c]} allows NULL; use pluck or to_a") if NULLABLE[c]
+          end
+          unless ocols.includes?(0)
+            ocols << 0
+            odesc << false
+          end
+          p = prefix
+          kstore = ::Ricord::Storage::Store.new
+          keys = [] of ::Ricord::Values::Value
+          have_keys = false
+          total = 0_i64
+          size = batch_size < 1 ? 1 : batch_size
+          while true
+            want = size.to_i64
+            cap = @limit_value
+            if cap
+              left = cap - total
+              break if left <= 0
+              want = left if left < want
+            end
+            extra = String::Builder.new
+            extra_binds = [] of ::Db::Value::DBValue
+            ::Ricord::Model.keyset_sql(p, COLUMNS, ocols, odesc, keys, kstore, extra, extra_binds, s.dialect) if have_keys
+            sql = String::Builder.new
+            args = [] of ::Db::Value::DBValue
+            sql << "SELECT " << (@distinct_rows ? "DISTINCT " : "") << select_list << " FROM `" << TABLE << '`'
+            ::Ricord::Model.join_sql(s.store, @last_join, sql, args, s.dialect)
+            ::Ricord::Model.scoped_where_sql(s.store, @last_where, @scope, COLUMNS, sql, args, s.dialect, p, extra.to_s, extra_binds)
+            sql << " ORDER BY "
+            ocols.size.times do |i|
+              sql << ", " if i > 0
+              sql << p << '`' << COLUMNS[ocols[i]] << '`'
+              sql << " DESC" if odesc[i]
+            end
+            s.dialect.limit_offset(want, nil, sql)
+            batch = ::Ricord::Storage::Store.new
+            child = ::Ricord::Sessions::Session.new(s.conn, batch, s.dialect, s.state, s.log)
+            bscope = ::Ricord::Model.copy_scope(s.store, batch, @scope)
+            count = {{name.id}}.read_into(child, sql.to_s, args, bscope)
+            return count if count.is_a?(::Ricord::Failures::DatabaseError)
+            if count > 0 && @includes != 0_i64
+              loaded = {{name.id}}.__preload_all(child, 0, count, @includes)
+              return loaded if loaded.is_a?(::Ricord::Failures::DatabaseError)
+            end
+            stop = nil
+            count.times do |k|
+              if stop.nil?
+                r = yield {{name.id}}.new(child, batch, k)
+                stop = r if r.is_a?(::Ricord::Failures::Failure)
+              end
+            end
+            return stop unless stop.nil?
+            total += count
+            break if count < want
+            ::Ricord::Model.copy_keys(batch, count - 1, ocols, keys, kstore)
+            have_keys = true
+          end
+          nil
+        end
+
+        # A new unsaved record. Through a has_many query the foreign key is set
+        # to the owner's id, and the owner's loaded range is dropped so the next
+        # read sees the record. Named `build`, not `new`: ris treats an instance
+        # method `new` as in-place construction, which may not grow the store.
+        # Through a scoped query the scope columns are set and the record keeps
+        # the scope.
+        def build(**attrs) : {{name.id}}
+          index = {{name.id}}.new(session, **attrs).index
+          if @owner >= 0
+            session.store.set_slot(index, @owner_fk, session.store.slot(@owner, 0))
+            ::Ricord::Associations.unload(session.store, @owner, @owner_assoc)
+          end
+          ::Ricord::Model.apply_scope(session.store, index, @scope)
+          session.store.scopes[index] = @scope
+          {{name.id}}.new(session, session.store, index)
+        end
+
+        def create(**attrs) : {{name.id}} | ::Ricord::Failures::Error
+          build(**attrs).save
+        end
+
+        # `WHERE` for a bulk write: the conditions and scope, or, with joins or
+        # a limit, `` `id` IN (SELECT ...) ``.
+        private def bulk_where(sql : String::Builder, args : Array(::Db::Value::DBValue)) : Nil
+          if @last_join >= 0 || !@limit_value.nil?
+            inner = String::Builder.new
+            build_sql("`#{TABLE}`.`id`", inner, args)
+            sql << " WHERE `id` IN (" << inner.to_s << ')'
+          else
+            ::Ricord::Model.scoped_where_sql(session.store, @last_where, @scope, COLUMNS, sql, args, session.dialect)
+          end
+          nil
+        end
+
+        # Runs a bulk statement in its own write unless inside one; a has_many
+        # owner's loaded range is dropped.
+        private def bulk_run(text : String, args : Array(::Db::Value::DBValue), operation : String) : Int64 | ::Ricord::Failures::DatabaseError
+          s = session
+          ::Ricord::Associations.unload(s.store, @owner, @owner_assoc) if @owner >= 0
+          return s.run(text, args) if s.state.depth > 0
+          written = s.write { |tx| tx.exec(text, args) }
+          # Its own write queues no after-commit item, so only the statement fails.
+          return written if written.is_a?(Int64) || written.is_a?(::Ricord::Failures::DatabaseError)
+          ::Ricord::Failures::DatabaseError.new(TABLE, operation, written.message)
+        end
+
+        # One `UPDATE` of the given columns over the matching rows (the scope
+        # included), no callbacks: the rows changed. Its own write unless inside one.
+        def update_all(**cols) : Int64 | ::Ricord::Failures::DatabaseError
+          s = session
+          sets = ""
+          args = [] of ::Db::Value::DBValue
+          cols.each do |key, value|
+            col = {{name.id}}.column_index(key)
+            sets << ", " unless sets.empty?
+            sets << '`' << COLUMNS[col] << (BLOB_COLUMNS[col] ? "` = unhex(?)" : "` = ?")
+            ::Ricord::Model.push_db(args, ::Ricord::Model.bind_value(s.store, value), s.store, s.dialect)
+          end
+          return 0_i64 if sets.empty?
+          sql = String::Builder.new
+          sql << "UPDATE `" << TABLE << "` SET " << sets
+          bulk_where(sql, args)
+          bulk_run(sql.to_s, args, "update_all")
+        end
+
+        # One `DELETE` of the matching rows (the scope included), no callbacks:
+        # the rows deleted. Its own write unless inside one.
+        def delete_all : Int64 | ::Ricord::Failures::DatabaseError
+          sql = String::Builder.new
+          args = [] of ::Db::Value::DBValue
+          sql << "DELETE FROM `" << TABLE << '`'
+          bulk_where(sql, args)
+          bulk_run(sql.to_s, args, "delete_all")
+        end
+
+        # Loads the matching rows in batches and destroys each with its
+        # callbacks and `dependent:` work, all in one write: the rows
+        # destroyed, or the first failure (the write then rolls back).
+        def destroy_all(batch_size : Int32 = 1000) : Int64 | ::Ricord::Failures::Error
+          q = self
+          s = session
+          ::Ricord::Associations.unload(s.store, @owner, @owner_assoc) if @owner >= 0
+          s.write do |tx|
+            n = 0_i64
+            walked = q.__walk(batch_size) do |record|
+              gone = record.destroy_in(::Ricord::Sessions::Tx.new(record.session, tx.depth))
+              n += 1 if gone.nil?
+              gone
+            end
+            walked.nil? ? n : walked
+          end
+        end
+      {% end %}
+    end
+    {% end %}
+
+    # Reads the rows of *sql* into consecutive records of *session*'s store as
+    # one load group with *scope*: the row count.
+    def self.read_into(session : ::Ricord::Sessions::Session, sql : String, args : Array(::Db::Value::DBValue), scope : Int32) : Int32 | ::Ricord::Failures::DatabaseError
+      s = session
+      first = s.store.size
+      failed = s.query(sql, args) do |rs|
+        problem = nil
+        while true
+          m = ::Ricord::Model.advance(rs, TABLE)
+          if m.is_a?(::Ricord::Failures::DatabaseError)
+            problem = m
+            break
+          end
+          break unless m
+          index = s.store.add_record(MODEL_ID, COLUMNS.size, ASSOCIATION_COUNT)
+          read = {{name.id}}.read_row(s.store, index, rs, s.dialect)
+          problem = read if read.is_a?(::Ricord::Failures::DatabaseError)
+          s.store.scopes[index] = scope
+        end
+        problem
+      end
+      return failed if failed.is_a?(::Ricord::Failures::DatabaseError)
+      count = s.store.size - first
+      ::Ricord::Associations.mark_group(s.store, first, count)
+      count
+    end
+
+    # Runs the preloads named by the *includes* bits for a group.
+    def self.__preload_all(session : ::Ricord::Sessions::Session, first : Int32, count : Int32, includes : Int64) : Nil | ::Ricord::Failures::DatabaseError
+      ASSOCIATION_COUNT.times do |a|
+        if (includes & (1_i64 << a)) != 0_i64
+          loaded = __preload(session, first, count, a)
+          return loaded if loaded.is_a?(::Ricord::Failures::DatabaseError)
+        end
+      end
+      nil
+    end
+
+    # Reads column *col* of the current row as a plucked value.
+    def self.__pluck_value(session : ::Ricord::Sessions::Session, rs : ::Db::Core::ResultSet, col : Int32) : ::Ricord::Model::Plucked
+      if col == 0
+        return rs.read(Int64 | Nil).or_panic
+      end
+      {% for c, i in cols %}
+        {% t = types[c.args[1].id.stringify] %}
+        if col == {{i + 1}}
+          {% if t == "String" || t == "::Ricord::Json::Json" || t == "::Ricord::Blob::Blob" %}
+            v = rs.read(String | Nil).or_panic
+            return v.nil? ? nil : session.store.view_text(v)
+          {% elsif t == "::Std::Time::Time" %}
+            v = rs.read(String | Nil).or_panic
+            return nil if v.nil?
+            tv = session.dialect.read_time(v, TABLE)
+            return tv.is_a?(::Ricord::Failures::DatabaseError) ? nil : tv
+          {% elsif t == "Bool" %}
+            v = rs.read(Int64 | Nil).or_panic
+            return v.nil? ? nil : v != 0_i64
+          {% else %}
+            return rs.read({{t.id}} | Nil).or_panic
+          {% end %}
+        end
+      {% end %}
+      nil
+    end
+
+    # Reads column *col* of the current row into slot *slot* of record
+    # *index* (text into the store).
+    def self.__pluck_slot(session : ::Ricord::Sessions::Session, rs : ::Db::Core::ResultSet, col : Int32, index : Int32, slot : Int32) : Nil
+      v = __pluck_value(session, rs, col)
+      session.store.load_slot(index, slot, v.is_a?(String) ? session.store.add_text(v) : v)
+      nil
+    end
+
+    # Appends the current row (selected as COLUMNS) as a JSON object.
+    def self.__json_row(rs : ::Db::Core::ResultSet, into : String::Builder) : Nil
+      into << "{\"id\":" << rs.read(Int64).or_panic
+      {% for c, i in cols %}
+        {% t = types[c.args[1].id.stringify] %}
+        into << ",\"{{c.args[0].id}}\":"
+        {% if t == "String" || t == "::Std::Time::Time" %}
+          v{{i}} = rs.read(String | Nil).or_panic
+          if v{{i}}.nil?
+            into << "null"
+          else
+            ::Ricord::Model.json_string(v{{i}}, into)
+          end
+        {% elsif t == "::Ricord::Json::Json" %}
+          v{{i}} = rs.read(String | Nil).or_panic
+          into << (v{{i}}.nil? || v{{i}}.empty? ? "null" : v{{i}})
+        {% elsif t == "::Ricord::Blob::Blob" %}
+          v{{i}} = rs.read(String | Nil).or_panic
+          if v{{i}}.nil?
+            into << "null"
+          else
+            into << '"'
+            v{{i}}.each_byte { |b| into << "0123456789abcdef"[(b >> 4).to_i32, 1] << "0123456789abcdef"[(b & 0x0F_u8).to_i32, 1] }
+            into << '"'
+          end
+        {% elsif t == "Bool" %}
+          v{{i}} = rs.read(Int64 | Nil).or_panic
+          into << (v{{i}}.nil? ? "null" : (v{{i}} != 0_i64 ? "true" : "false"))
+        {% else %}
+          v{{i}} = rs.read({{t.id}} | Nil).or_panic
+          into << (v{{i}}.nil? ? "null" : v{{i}}.to_s)
+        {% end %}
+      {% end %}
+      into << '}'
+      nil
+    end
+
+    # `joins`: appends the INNER JOIN for association *names[k]* of this
+    # model, with the scope pairs the joined table has (*map*: pair position
+    # => this model's column index or -1), then the next hop's.
+    def self.__join(names : Array(Symbol), k : Int32, store : ::Ricord::Storage::Store, map : Array(Int32), scope : Int32, text : String::Builder) : Nil
+      return nil if k >= names.size
+      {% for a, ai in assocs %}
+        if names[k] == {{a[1].symbolize}}
+          t = {{a[2]}}::TABLE
+          {% if a[0] == "belongs_to" %}
+            text << " INNER JOIN `" << t << "` ON `" << t << "`.`id` = `" << TABLE << "`.`{{a[3]}}`"
+          {% else %}
+            text << " INNER JOIN `" << t << "` ON `" << t << "`.`{{a[3]}}` = `" << TABLE << "`.`id`"
+          {% end %}
+          # Composed in place: *map* is the caller's, reused by every hop.
+          map.size.times { |i| map[i] = map[i] < 0 ? -1 : SCOPE_MAP_{{a[1].id.upcase}}[map[i]] }
+          map.size.times do |i|
+            tc = map[i]
+            next if tc < 0
+            value = store.scope_vals[scope + i]
+            if value.nil?
+              text << " AND `" << t << "`.`" << {{a[2]}}::COLUMNS[tc] << "` IS NULL"
+            else
+              text << " AND `" << t << "`.`" << {{a[2]}}::COLUMNS[tc] << "` = ?"
+              store.add_bind(value)
+            end
+          end
+          return {{a[2]}}.__join(names, k + 1, store, map, scope, text)
+        end
+      {% end %}
+      text << " INNER JOIN `unknown association " << names[k].to_s << "` ON 0"
+      nil
     end
 
     def self.column_index(column : Symbol) : Int32
@@ -1378,6 +1945,9 @@ pub macro model(name, &block)
       {% an = a[1] %}
       {% target = a[2] %}
       {% fk = a[3] %}
+      # Scope column matching for {{an}}: each column of this model to the
+      # same-named column of {{target}}, or -1 (has_many scope, `joins`).
+      SCOPE_MAP_{{an.id.upcase}} = [{% for c in ["id"] + cols.map { |c| c.args[0].id.stringify } %}{{target}}.column_named({{c}}), {% end %}]
       {% if kind == "belongs_to" %}
         {% fci = a[4] %}
         {% fcol = cols[fci - 1] %}
@@ -1470,10 +2040,6 @@ pub macro model(name, &block)
           scope = ::Ricord::Model.child_scope(store, index, fk, SCOPE_MAP_{{an.id.upcase}})
           {{target}}::Query.new(session, -1, -1, nil, nil, 0_i64, index, {{ai}}, fk, true, scope)
         end
-
-        # Scope column matching for {{an}}: each column of this model to the
-        # same-named column of {{target}}, or -1.
-        SCOPE_MAP_{{an.id.upcase}} = [{% for c in ["id"] + cols.map { |c| c.args[0].id.stringify } %}{{target}}.column_named({{c}}), {% end %}]
 
         # `includes(:{{an}})`: every owner's children in one query per 1,000
         # owners, ordered by {{fk}}, id so each owner's children are contiguous.
