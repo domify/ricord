@@ -211,11 +211,13 @@ pub struct Session
       run(@dialect.begin_write)!
       @state.base = start
       @state.depth = 1
+      @store.enter_write(1)
       tx = Tx.new(self, 1)
       value = yield tx
       @state.depth = 0
       if value.is_a?(Failure)
         run("ROLLBACK")
+        @store.leave_write(true)
         rolled_back(start, 1)
         @state.base = saved_base
         return value
@@ -223,10 +225,12 @@ pub struct Session
       committed = run("COMMIT")
       if committed.is_a?(DatabaseError)
         # The next write rolls the failed transaction back, as before M2.
+        @store.leave_write(true)
         rolled_back(start, 1)
         @state.base = saved_base
         return committed
       end
+      @store.leave_write(false)
       @state.base = saved_base
       drop_rollback_items(start)
       return value if @state.draining
@@ -239,14 +243,17 @@ pub struct Session
       run("SAVEPOINT #{name}")!
       @state.depth += 1
       level = @state.depth
+      @store.enter_write(level)
       tx = Tx.new(self, level)
       value = yield tx
       @state.depth -= 1
       if value.is_a?(Failure)
         run("ROLLBACK TO #{name}")
         run("RELEASE #{name}")
+        @store.leave_write(true)
         rolled_back(@state.base, level)
       else
+        @store.leave_write(false)
         run("RELEASE #{name}")!
         index = @state.base
         while index < @state.pending.size
@@ -379,15 +386,18 @@ pub struct Session
     child = Session.new(@conn, store, @dialect, @state, @log)
     # The block's value is the def's last call, so a number, String or tuple
     # returned from the block leaves it.
-    request_done(yield child)
+    request_done(store, yield child)
   end
 
   # The end of a request: rolls back a write it left open, ends the read
   # transaction, and passes *value* through.
-  private def request_done(value : T) : T forall T
+  private def request_done(store : Store, value : T) : T forall T
     if @state.depth > 0
       run("ROLLBACK")
       @state.depth = 0
+      while store.undo_depth > 0
+        store.leave_write(true)
+      end
       rolled_back(@state.base, 1)
     end
     end_read

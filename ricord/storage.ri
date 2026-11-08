@@ -68,6 +68,27 @@ pub class Store
   getter binds = [] of Value
   getter orders = [] of OrderNode
   getter joins = [] of Int32
+  # The undo log of the open writes (RICORD_SPEC.md rule 5.9): when a record
+  # first changes at a write depth, one entry keeps its flags, slots and changed
+  # marks as they were. `touched` holds each record's newest entry or -1;
+  # `undo_prev` links to the record's entry at a shallower depth.
+  getter undo_depth = 0
+  getter mark_count = 0
+  # Set by `save` and `destroy` just before it opens its own write: a rollback of that write
+  # keeps the attempted values (RICORD_SPEC.md rule 5.9).
+  property attempt_next = false
+  getter undo_attempts = [] of Bool
+  getter undo_size = 0
+  getter undo_vsize = 0
+  getter undo_marks = [] of Int32
+  getter touched = [] of Int32
+  getter undo_records = [] of Int32
+  getter undo_depths = [] of Int32
+  getter undo_flags = [] of UInt8
+  getter undo_prev = [] of Int32
+  getter undo_starts = [] of Int32
+  getter undo_values = [] of Value
+  getter undo_changed = [] of Bool
 
   # A new record of *model* with *columns* nil slots; its index.
   def add_record(model : Int32, columns : Int32, associations : Int32) : Int32
@@ -80,6 +101,7 @@ pub class Store
     @flags << 0_u8
     @scopes << -1
     @groups << -1
+    @touched << -1
     @link_starts << @link_ranges.size
     (associations * 2).times { @link_ranges << -1 }
     @models.size - 1
@@ -93,12 +115,192 @@ pub class Store
     @values[@starts[index] + col]
   end
 
-  # Sets a slot from a database read: not marked changed.
+  # Sets a slot from a database read: not marked changed, not logged (a caller
+  # that overwrites a record known before the write calls `touch` first).
   def load_slot(index : Int32, col : Int32, value : Value) : Nil
     @values[@starts[index] + col] = value
   end
 
+  # Marks a record read from the database as persisted, not logged.
+  def mark_loaded(index : Int32) : Nil
+    @flags[index] = @flags[index] | (1_u8 << FLAG_PERSISTED)
+  end
+
+  # A write depth begins (*depth* is 1 for the outermost write).
+  def enter_write(depth : Int32) : Nil
+    @undo_depth = depth
+    if @mark_count < @undo_marks.size
+      @undo_marks[@mark_count] = @models.size
+      @undo_attempts[@mark_count] = @attempt_next
+    else
+      @undo_marks << @models.size
+      @undo_attempts << @attempt_next
+    end
+    @attempt_next = false
+    @mark_count += 1
+    nil
+  end
+
+  # The write at the current depth ends; *rolled_back* restores every record
+  # it changed, else its entries pass to the enclosing depth (dropped when that
+  # depth already has one for the record, or when the outermost write commits).
+  # The log's arrays never shrink (a write's block may hold views of the
+  # store): `undo_size` and `undo_vsize` are their used lengths.
+  def leave_write(rolled_back : Bool) : Nil
+    return nil if @mark_count == 0
+    level = @undo_depth
+    first = undo_first(level)
+    if rolled_back
+      attempted = @undo_attempts[@mark_count - 1]
+      e = @undo_size - 1
+      while e >= first
+        restore(e, attempted)
+        e -= 1
+      end
+      @undo_vsize = @undo_starts[first] if first < @undo_size
+      @undo_size = first
+    elsif @mark_count == 1
+      e = 0
+      while e < @undo_size
+        @touched[@undo_records[e]] = -1
+        e += 1
+      end
+      @undo_size = 0
+      @undo_vsize = 0
+    else
+      merge(level, first)
+    end
+    @mark_count -= 1
+    @undo_depth = @mark_count == 0 ? 0 : level - 1
+    nil
+  end
+
+  # Logs record *index* at the current write depth, once per depth.
+  def touch(index : Int32) : Nil
+    return nil if @undo_depth == 0
+    prev = @touched[index]
+    return nil if prev >= 0 && @undo_depths[prev] == @undo_depth
+    e = @undo_size
+    if e < @undo_records.size
+      @undo_records[e] = index
+      @undo_depths[e] = @undo_depth
+      @undo_flags[e] = @flags[index]
+      @undo_prev[e] = prev
+      @undo_starts[e] = @undo_vsize
+    else
+      @undo_records << index
+      @undo_depths << @undo_depth
+      @undo_flags << @flags[index]
+      @undo_prev << prev
+      @undo_starts << @undo_vsize
+    end
+    @undo_size += 1
+    at = @starts[index]
+    stop = index + 1 < @starts.size ? @starts[index + 1] : @values.size
+    while at < stop
+      put_undo_value(@undo_vsize, own(@values[at]), @changed[at])
+      @undo_vsize += 1
+      at += 1
+    end
+    @touched[index] = e
+    nil
+  end
+
+  # *value* with no reference into another owner: a `Time` holds its
+  # `Location` (a class), so it is rebuilt in UTC, the same instant. Copying a
+  # Time as it is after a write's block ran fails the compiler's tape check.
+  private def own(value : Value) : Value
+    value.is_a?(Time) ? Time.unix(value.to_unix, value.nanosecond) : value
+  end
+
+  private def put_undo_value(at : Int32, value : Value, changed : Bool) : Nil
+    if at < @undo_values.size
+      @undo_values[at] = value
+      @undo_changed[at] = changed
+    else
+      @undo_values << value
+      @undo_changed << changed
+    end
+    nil
+  end
+
+  # Logs a change by the user: a record made inside this write depth is not
+  # logged until it gets an id or a flag (its values are the attempted ones).
+  private def touch_known(index : Int32) : Nil
+    touch(index) if @mark_count > 0 && index < @undo_marks[@mark_count - 1]
+    nil
+  end
+
+  # The first entry at depth *level* or deeper (they are the log's tail).
+  private def undo_first(level : Int32) : Int32
+    first = @undo_size
+    while first > 0 && @undo_depths[first - 1] >= level
+      first -= 1
+    end
+    first
+  end
+
+  # The end of entry *e*'s values.
+  private def undo_stop(e : Int32) : Int32
+    e + 1 < @undo_size ? @undo_starts[e + 1] : @undo_vsize
+  end
+
+  # Restores entry *e*; with *attempted* (the write a save opened for itself)
+  # the slot values other than the id stay as the save left them.
+  private def restore(e : Int32, attempted : Bool) : Nil
+    index = @undo_records[e]
+    @flags[index] = @undo_flags[e]
+    from = @undo_starts[e]
+    start = @starts[index]
+    stop = undo_stop(e)
+    at = from
+    while at < stop
+      @values[start + at - from] = own(@undo_values[at]) if at == from || !attempted
+      @changed[start + at - from] = @undo_changed[at]
+      at += 1
+    end
+    @touched[index] = @undo_prev[e]
+    nil
+  end
+
+  # A released savepoint: entries at *level* move to level - 1, except those
+  # whose record already has an entry there (the older state wins).
+  private def merge(level : Int32, first : Int32) : Nil
+    kept = first
+    dest = first < @undo_size ? @undo_starts[first] : @undo_vsize
+    e = first
+    while e < @undo_size
+      index = @undo_records[e]
+      prev = @undo_prev[e]
+      from = @undo_starts[e]
+      stop = undo_stop(e)
+      if prev >= 0 && @undo_depths[prev] == level - 1
+        @touched[index] = prev
+      else
+        @undo_records[kept] = index
+        @undo_depths[kept] = level - 1
+        @undo_flags[kept] = @undo_flags[e]
+        @undo_prev[kept] = prev
+        @undo_starts[kept] = dest
+        at = from
+        while at < stop
+          @undo_values[dest] = own(@undo_values[at])
+          @undo_changed[dest] = @undo_changed[at]
+          dest += 1
+          at += 1
+        end
+        @touched[index] = kept
+        kept += 1
+      end
+      e += 1
+    end
+    @undo_size = kept
+    @undo_vsize = dest
+    nil
+  end
+
   def set_slot(index : Int32, col : Int32, value : Value) : Nil
+    touch_known(index)
     at = @starts[index] + col
     @values[at] = value
     @changed[at] = true
@@ -109,6 +311,7 @@ pub class Store
   end
 
   def clear_changed(index : Int32, columns : Int32) : Nil
+    touch(index)
     columns.times { |col| @changed[@starts[index] + col] = false }
   end
 
@@ -172,7 +375,9 @@ pub class Store
     (@flags[index] & (1_u8 << bit)) != 0_u8
   end
 
+  # Logged, except the load-group mark.
   def set_flag(index : Int32, bit : Int32, on : Bool) : Nil
+    touch(index) unless bit == FLAG_GROUP
     @flags[index] = on ? (@flags[index] | (1_u8 << bit)) : (@flags[index] & ~(1_u8 << bit))
   end
 

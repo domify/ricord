@@ -122,9 +122,16 @@ new rules go last in their section; a removed rule keeps its number with
   rolls back. A failed commit is returned as an error.
 * 5.8 A write inside a write is a savepoint. An inner block never commits the
   outer one.
-* 5.9 A rollback restores the records' persisted state, id and baseline to
-  what they were when the write began. Attempted values stay for inspection
-  and count as changed.
+* 5.9 A rollback (or ROLLBACK TO for a nested write) restores every record
+  the write changed, children destroyed by `dependent: :destroy` included:
+  flags, id, values and changed marks are what they were when the write
+  began. Values assigned before the write stay and still count as changed.
+  When the write that rolls back is the one a `save` or `destroy` opened for
+  itself (a refused callback, a failed statement), the attempted values,
+  callbacks' assignments included, stay for inspection; only flags, id and
+  changed marks go back. A record made inside the write keeps its attempted
+  values but loses the id and persisted flag it got there. A save of an
+  unchanged persisted record sends nothing.
 * 5.10 After-commit work is a flat queue of (model, id, method) items in the
   session. Items run after the outermost commit, each in its own write;
   `after_rollback` items run after a rollback. A savepoint commits nothing.

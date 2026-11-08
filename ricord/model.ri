@@ -645,7 +645,7 @@ pub macro model(name, &block)
           store.load_slot(index, {{i + 1}}, rs.read({{t.id}} | Nil).or_panic)
         {% end %}
       {% end %}
-      store.set_flag(index, ::Ricord::Storage::FLAG_PERSISTED, true)
+      store.mark_loaded(index)
       nil
     end
 
@@ -883,6 +883,8 @@ pub macro model(name, &block)
     # callbacks, in its own write unless inside one (then a savepoint).
     def save : self | ::Ricord::Failures::Error
       return ::Ricord::Failures::DatabaseError.new(TABLE, "save", "record #{id} is destroyed") if destroyed?
+      # Nothing changed: no statement, no write, no callbacks (as Grant).
+      return self if persisted? && !changed?
       scoped = ::Ricord::Model.scope_violation(store, index)
       return ::Ricord::Failures::ScopeError.new(TABLE, COLUMNS[scoped]) if scoped >= 0
       refused = run_validations
@@ -891,7 +893,9 @@ pub macro model(name, &block)
       return ::Ricord::Failures::RecordInvalid.new(TABLE, ::Ricord::Validations.first_full_message(store, index, COLUMNS), count) if count > 0
       was_new = new_record?
       record = self
+      store.attempt_next = true
       result = session.write { |tx| record.save_in(tx) }
+      store.attempt_next = false
       if result.is_a?(::Ricord::Failures::AfterCommitError)
         # The row is committed; only its after-commit work failed.
         store.clear_changed(index, COLUMNS.size)
@@ -1051,6 +1055,7 @@ pub macro model(name, &block)
         d.insert_returning(PRIMARY, sql)
         new_id = session.query(sql.to_s, args) { |rs| m = ::Ricord::Model.advance(rs, TABLE); m.is_a?(::Ricord::Failures::DatabaseError) ? m : (m ? rs.read(Int64).or_panic : 0_i64) }
         return new_id if new_id.is_a?(::Ricord::Failures::DatabaseError)
+        store.touch(index)
         store.load_slot(index, 0, new_id)
         store.set_flag(index, ::Ricord::Storage::FLAG_PERSISTED, true)
       else
@@ -1074,7 +1079,9 @@ pub macro model(name, &block)
     def destroy : self | ::Ricord::Failures::Error
       return ::Ricord::Failures::DatabaseError.new(TABLE, "destroy", "record #{id} is destroyed") if destroyed?
       record = self
+      store.attempt_next = true
       result = session.write { |tx| record.destroy_in(tx) }
+      store.attempt_next = false
       if result.is_a?(::Ricord::Failures::AfterCommitError)
         store.set_flag(index, ::Ricord::Storage::FLAG_DESTROYED, true)
         return result
@@ -1130,6 +1137,7 @@ pub macro model(name, &block)
     end
 
     def reload : self | ::Ricord::Failures::Error
+      store.touch(index)
       record = self
       found = session.query("SELECT #{COLUMNS.map { |c| "`#{c}`" }.join(", ")} FROM `#{TABLE}` WHERE `id` = ?", [id.as(::Db::Value::DBValue)]) do |rs|
         m = ::Ricord::Model.advance(rs, TABLE)

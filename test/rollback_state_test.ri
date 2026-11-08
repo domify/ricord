@@ -1,0 +1,201 @@
+# A rolled-back write restores the records it changed (RICORD_SPEC.md rule
+# 5.9): flags, id, values and changed marks are as before the write, for an
+# outer ROLLBACK and a nested ROLLBACK TO, also for children destroyed by
+# `dependent: :destroy`. A save of an unchanged persisted record sends nothing
+# (grant_perf_w6_statement_count).
+module test/rollback_state_test
+
+import db/db/spec::{describe, it}
+import ricord
+import ricord/model::{model}
+import ricord/sessions::{Session}
+import ricord/storage::{FLAG_DESTROYED}
+import test/spec_helper::*
+import test/models::*
+
+model Shelf do
+  table :shelves
+  col :name, :string
+  has_many :books, dependent: :destroy
+end
+
+model Book do
+  table :books
+  col :shelf_id, :int64, null: true
+  col :title, :string
+end
+
+model Stamped do
+  table :stampeds
+  col :name, :string
+  cols :timestamps
+end
+
+def with_shelves(& : Session -> Nil) : Nil
+  with_db do |db|
+    Shelf.create_table(db).or_panic
+    Book.create_table(db).or_panic
+    Stamped.create_table(db).or_panic
+    db.release
+    yield db
+  end
+end
+
+# Whether any record in the session's store carries the destroyed flag.
+def any_destroyed?(db : Session) : Bool
+  db.store.size.times { |i| return true if db.store.flag?(i, FLAG_DESTROYED) }
+  false
+end
+
+describe "rollback restores records" do
+  it "un-destroys a record destroyed in a rolled-back write" do
+    with_db do |db|
+      court = Court.create(db, name: "a").or_panic
+      db.write { |tx| court.destroy.or_panic; tx.roll_back }
+      assert !court.destroyed? && court.persisted?
+      db.write do |tx|
+        tx.write { |inner| court.destroy.or_panic; inner.roll_back }
+        assert !court.destroyed?, "ROLLBACK TO restores the flag"
+        nil
+      end.or_panic
+      assert !court.destroyed?
+      db.write do |tx|
+        tx.write { |inner| court.destroy.or_panic; nil }.or_panic
+        assert court.destroyed?
+        tx.roll_back
+      end
+      assert !court.destroyed?, "a released savepoint's change is undone by the outer rollback"
+      assert Court[db].count.or_panic == 1_i64
+    end
+  end
+
+  it "makes a record created in a rolled-back write new again" do
+    with_db do |db|
+      court = Court.new(db, name: "x")
+      db.write { |tx| court.save.or_panic; tx.roll_back }
+      assert court.new_record? && !court.persisted? && court.id == 0_i64
+      assert court.name == "x" && court.changed_attributes == ["name"]
+      db.write do |tx|
+        tx.write { |inner| court.save.or_panic; inner.roll_back }
+        assert court.new_record? && court.id == 0_i64
+        assert court.changed_attributes == ["name"]
+        nil
+      end.or_panic
+      db.write do |tx|
+        tx.write { |inner| court.save.or_panic; nil }.or_panic
+        assert court.persisted?
+        tx.roll_back
+      end
+      assert court.new_record? && court.id == 0_i64 && court.changed_attributes == ["name"]
+      court.save.or_panic
+      assert court.persisted? && Court[db].count.or_panic == 1_i64
+    end
+  end
+
+  it "restores values and changed marks of an update" do
+    with_db do |db|
+      court = Court.create(db, name: "a").or_panic
+      db.write { |tx| court.name = "b"; court.save.or_panic; tx.roll_back }
+      assert court.name == "a" && !court.changed?
+      court.name = "c"
+      db.write { |tx| court.save.or_panic; tx.roll_back }
+      assert court.name == "c" && court.changed_attributes == ["name"], "a change made before the write stays changed"
+      db.write do |tx|
+        court.save.or_panic
+        tx.write do |inner|
+          court.name = "d"
+          court.save.or_panic
+          inner.roll_back
+        end
+        assert court.name == "c" && !court.changed?, "ROLLBACK TO returns to the outer write's state"
+        nil
+      end.or_panic
+      assert court.name == "c" && !court.changed?
+      assert Court[db].find(court.id).or_panic.name == "c"
+    end
+  end
+
+  it "restores children destroyed by dependent: :destroy" do
+    with_shelves do |db|
+      shelf = Shelf.create(db, name: "s").or_panic
+      Book.create(db, shelf_id: shelf.id, title: "a").or_panic
+      Book.create(db, shelf_id: shelf.id, title: "b").or_panic
+      db.write { |tx| shelf.destroy.or_panic; tx.roll_back }
+      assert !shelf.destroyed? && !any_destroyed?(db)
+      db.write do |tx|
+        tx.write { |inner| shelf.destroy.or_panic; inner.roll_back }
+        assert !shelf.destroyed? && !any_destroyed?(db)
+        nil
+      end.or_panic
+      assert Book[db].count.or_panic == 2_i64
+      shelf.destroy.or_panic
+      assert shelf.destroyed? && Book[db].count.or_panic == 0_i64
+    end
+  end
+end
+
+# Ported from grant_persistence_transaction_lifecycle_state, on a model with
+# timestamps and update(**attrs).
+describe "transaction lifecycle state" do
+  it "restores a created record to new state when its write rolls back" do
+    with_shelves do |db|
+      record = Stamped.new(db, name: "rolled back")
+      db.write { |tx| record.save.or_panic; tx.roll_back }
+      assert record.new_record? && !record.persisted?
+      assert Stamped[db].count.or_panic == 0_i64
+      record.save.or_panic
+      assert record.persisted? && Stamped[db].count.or_panic == 1_i64
+    end
+  end
+
+  it "restores an updated record after a rollback" do
+    with_shelves do |db|
+      record = Stamped.create(db, name: "before").or_panic
+      updated_at = record.updated_at
+      db.write { |tx| record.update(name: "inside").or_panic; tx.roll_back }
+      assert record.name == "before" && !record.name_changed?
+      assert record.updated_at == updated_at
+      assert Stamped[db].find(record.id).or_panic.name == "before"
+    end
+  end
+
+  it "restores only savepoint changes and keeps earlier outer writes" do
+    with_shelves do |db|
+      record = Stamped.create(db, name: "before").or_panic
+      db.write do |tx|
+        record.update(name: "outer").or_panic
+        tx.write { |inner| record.update(name: "inner").or_panic; inner.roll_back }
+        assert record.name == "outer" && !record.name_changed?
+        nil
+      end.or_panic
+      assert Stamped[db].find(record.id).or_panic.name == "outer"
+    end
+  end
+end
+
+# Ported from grant_perf_w6_statement_count (the lazy-begin transaction parts
+# are Grant-internal).
+describe "save of an unchanged record" do
+  it "runs nothing for a record with no changes" do
+    with_shelves do |db|
+      person = Stamped.create(db, name: "Clean").or_panic
+      loaded = Stamped[db].find(person.id).or_panic
+      db.release
+      start = db.statements.size
+      loaded.save.or_panic
+      assert db.statements.size == start
+    end
+  end
+
+  it "runs nothing for a record that was just saved, and keeps its stamps" do
+    with_shelves do |db|
+      person = Stamped.create(db, name: "Fresh").or_panic
+      created_at = person.created_at
+      updated_at = person.updated_at
+      start = db.statements.size
+      person.save.or_panic
+      assert db.statements.size == start
+      assert person.created_at == created_at && person.updated_at == updated_at
+    end
+  end
+end

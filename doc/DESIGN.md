@@ -1717,12 +1717,19 @@ wins:
     is `build_sql`.
 *   Loaders read rows with `read_rows` (no preload); `to_a` builds its array after preloading,
     because recursion through a growing local array is refused.
-*   A `save` of an unchanged record still sends `BEGIN IMMEDIATE` and `COMMIT` (open).
+*   A `save` of an unchanged persisted record sends nothing and runs no callbacks (Grant sent
+    nothing; Rails would still run the save callbacks).
 *   Scope (part B) is a flat pair list in the store (`scope_cols`, `scope_vals`, ended by -1).
     It passes only through `has_many`; records loaded by a group query or `includes` get no
     scope (open). `update_all` is added early, limited by the scope.
-*   A child destroyed by `dependent: :destroy` keeps its destroyed flag when the parent's write
-    rolls back (open; same as the store-flag rollback issue from M1).
+*   Rollback state (RICORD_SPEC 5.9): the store keeps an undo log. The first change of a record
+    at a write depth logs its old flags, slot values and changed marks, linked to its earlier
+    entry; records read inside the write are not logged. ROLLBACK / ROLLBACK TO replay the log
+    tail backwards (dependent children included); RELEASE merges into the parent level, keeping
+    the older entry; the outer COMMIT clears it. A write opened by `save`/`destroy` itself
+    restores only flags, id and changed marks, so attempted values stay for inspection. The log
+    arrays only grow (a store array may not shrink after the block's `yield`) and a restored
+    `Time` comes back in UTC. Only the store of the session that opened the write is restored.
 
 Goal: associations read through the record's session; `belongs_to` and `has_one` over a group
 of N records take one query, not N; `has_many` takes one query with `includes`; scope follows

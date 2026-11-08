@@ -15,7 +15,7 @@ completed: M1, M2, M3, M4
 | test/attribute_spec_models.ri | drop |  |  | support file, not a test | |
 | test/convenience_models.ri | drop |  |  | support file, not a test | |
 | test/converter_spec_support.ri | drop |  |  | support file, not a test | |
-| test/delete_test.ri | port | test/crud_test.ri | M1 | rollback restoring a destroyed record's flags deferred: store flags are not reset when a write rolls back | x |
+| test/delete_test.ri | port | test/crud_test.ri | M1 | destroy and the flags; a rolled-back destroy restoring the record's flags is in test/rollback_state_test.ri | x |
 | test/dirty_family_models.ri | drop |  |  | support file, not a test | |
 | test/encryption_codec_regression_test.ri | defer |  |  | encryption is in Future Improvements | |
 | test/grant_adapter_read_tape_test.ri | drop |  |  | adapter and config layer replaced by Ricord.open and the URI scheme | |
@@ -166,8 +166,8 @@ completed: M1, M2, M3, M4
 | test/grant_perf_w6_primary_key_lookup_test.ri | defer |  |  | the query cache and query-log tags are not in doc/DESIGN.md | |
 | test/grant_perf_w6_sqlite_time_parse_test.ri | port | test/types_test.ri | M1 | runs on both engines; the save round trip is the existing Time test | x |
 | test/grant_perf_w6_statement_count_create_find_test.ri | port | test/group_loading_test.ri | M3 | create is BEGIN IMMEDIATE, INSERT ... RETURNING, COMMIT; find is one SELECT; Grant's operator-form where (:gt, :like) is replaced by typed where and raw SQL, covered in crud_test | x |
-| test/grant_perf_w6_statement_count_test.ri | defer |  |  | a save of an unchanged record still runs BEGIN IMMEDIATE and COMMIT (no lazy write that sends nothing until a statement); the transaction materializer is Grant-internal | |
-| test/grant_perf_w6_statement_count_writes_test.ri | port | test/group_loading_test.ri | M3 | UPDATE inside BEGIN IMMEDIATE/COMMIT, one BEGIN and one COMMIT around several saves; a callback's write and rollback are covered by callback_test and write_test; restoring a record's state on rollback deferred as in delete_test | x |
+| test/grant_perf_w6_statement_count_test.ri | port | test/rollback_state_test.ri | M3 | a save of an unchanged loaded or just-saved record sends no statement and keeps its timestamps; the lazy-begin transaction (materializer) parts are Grant-internal | x |
+| test/grant_perf_w6_statement_count_writes_test.ri | port | test/group_loading_test.ri | M3 | UPDATE inside BEGIN IMMEDIATE/COMMIT, one BEGIN and one COMMIT around several saves; a callback's write and rollback are covered by callback_test and write_test; restoring a record's state on rollback is in rollback_state_test | x |
 | test/grant_persistence_destroyed_guard_test.ri | port | test/crud_test.ri | M1 | in-memory reads after destroy, no row written back, live records unaffected; the RecordDestroyedError guard is not built (save of a destroyed record runs an UPDATE that changes no row); frozen?, update*, touch and increment not built | x |
 | test/grant_persistence_direct_persistence_test.ri | defer |  |  | update_columns, increment!, touch and read-only attributes not built and not planned in doc/DESIGN.md; per-column dirty API is M2 | |
 | test/grant_persistence_dirty_tracking_api_test.ri | defer |  |  | will_save_change_to_`<col>`? with from:/to: is not in doc/DESIGN.md, and a new record's given columns count as changed in Ricord (Grant starts clean) | |
@@ -181,7 +181,7 @@ completed: M1, M2, M3, M4
 | test/grant_persistence_read_only_transaction_create_test.ri | defer |  |  | read-only transactions are PostgreSQL/MySQL only; the SQLite scenario needs create with an explicit id: and RecordNotSaved with a cause, neither built | |
 | test/grant_persistence_touch_options_test.ri | port | test/dirty_test.ri | M2 | a save that changes a column stamps updated_at in the same UPDATE; touch(time:), touch of named columns, increment!/decrement! with touch: and update_column are not in doc/DESIGN.md | x |
 | test/grant_persistence_transaction_lifecycle_failure_test.ri | port | test/after_commit_test.ri | M2 | a failing after_commit item makes the write return AfterCommitError with its message and record id, the row stays committed and no write is left open; around_save is not in doc/DESIGN.md | x |
-| test/grant_persistence_transaction_lifecycle_state_test.ri | defer |  |  | store flags and values are not reset when a write rolls back; the savepoint row behaviour is already in write_test | |
+| test/grant_persistence_transaction_lifecycle_state_test.ri | port | test/rollback_state_test.ri | M3 | a rolled-back create is new again, a rolled-back update has its old value and no changed mark (and its old updated_at), a rolled-back savepoint keeps the outer write's change | x |
 | test/grant_persistence_update_counters_test.ri | defer |  |  | update_counters (and touch) are not built | |
 | test/grant_persistence_w6_assign_unknown_key_test.ri | port | test/refused/unknown_column_key.ri | M1 | an unknown key is a build error of the typed new; assign_attributes, attributes=, alias_attribute and string-keyed hashes not in Ricord | x |
 | test/grant_persistence_w6_model_name_test.ri | defer |  |  | model_name, pluralization, human names and I18n are not built | |
@@ -306,7 +306,7 @@ completed: M1, M2, M3, M4
 | test/grant_transaction_replica_routing_test.ri | drop |  |  | transaction routing and options replaced by db.write | |
 | test/grant_transaction_requires_new_savepoint_test.ri | drop |  |  | transaction routing and options replaced by db.write | |
 | test/grant_transaction_return_value_test.ri | port | test/write_test.ri | M1 | write returns the block value (a record, Int32, String, nil), a nested write's value, the Rollback or the failure itself; joinable/independent levels and Grant.transaction forms are replaced by db.write | x |
-| test/grant_transaction_savepoint_failure_test.ri | port | test/write_test.ri | M1 | a failing savepoint rolls back alone, a failing statement is recovered with ROLLBACK TO and COMMIT follows, no write is left open, savepoint names stay unique; savepoint callbacks are M2; restoring a record's in-memory state after a rolled-back savepoint is not in Ricord | x |
+| test/grant_transaction_savepoint_failure_test.ri | port | test/write_test.ri | M1 | a failing savepoint rolls back alone, a failing statement is recovered with ROLLBACK TO and COMMIT follows, no write is left open, savepoint names stay unique; savepoint callbacks are M2; restoring a record's in-memory state after a rolled-back savepoint is in rollback_state_test | x |
 | test/grant_transaction_test.ri | port | test/write_test.ri | M1 | commit, rollback on a failure and on Rollback, a nested write as a savepoint, a released savepoint undone with the outer write, whether a write is open (state.depth); a joined nested block is not in Ricord (every nested write is a savepoint); isolation levels and readonly are PostgreSQL/MySQL options | x |
 | test/grant_transactions_create_test.ri | port | test/write_test.ri | M1 | create persists and reads back (the reserved word column is in crud_test); validations and skip_timestamps are M2; custom primary keys and namespaced models are not in Ricord | x |
 | test/grant_transactions_destroy_test.ri | port | test/write_test.ri | M1 | destroy removes the row and moves destroyed? and persisted?; a before_destroy abort is M2; custom primary keys and namespaced models are not in Ricord | x |
