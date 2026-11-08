@@ -1842,6 +1842,11 @@ wins:
     `batch_size < 1` counts as 1.
 *   `delete_all`/`destroy_all`/`update_all` with `limit` or `joins` go through `` `id` IN (SELECT
     ...) ``. Typed conditions, order and select get the table prefix under `joins`.
+*   Part B: `Ricord.open` and `request` end their blocks with `session.released(yield ...)` so
+    a `String` or tuple can leave them. Memory criterion 2 is asserted on SQLite and reported
+    as pending on Turso: libturso grows RSS once in the first 1,000 distinct-row saves (WAL
+    frames), then stays flat. `memory_test` starts its children through `system(3)` because
+    std `Process.run` does not build on ris1. The Turso CI job is required.
 
 ### M5: example, documents, contract
 

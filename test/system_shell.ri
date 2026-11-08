@@ -1,0 +1,14 @@
+# system(3) for test/memory_test.ri: std's Process.run does not build on ris1
+# ("cannot return a value made in this def `launch`'s scratch",
+# std/process.iyi:678), so its children are started through the shell.
+@[Ffi]
+module test/system_shell
+
+lib LibSystemShell
+  fun system(command : UInt8*) : Int32
+end
+
+# Runs *command* with /bin/sh; the wait status (0 when it exited with 0).
+pub def shell(command : String) : Int32
+  LibSystemShell.system(command.to_unsafe)
+end

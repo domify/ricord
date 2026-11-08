@@ -28,8 +28,8 @@ pub def open(uri : String, log : Bool = false, & : Session -> U) : U | DBError f
     state = TxState.new
     session = Session.new(conn, store, dialect, state, log)
     dialect.pragmas.each { |pragma| session.run(pragma) }
-    value = yield session
-    session.release
-    value
+    # The block's value is the block's last call, so a String or tuple
+    # returned from it leaves the session (CUJ 7).
+    session.released(yield session)
   end
 end

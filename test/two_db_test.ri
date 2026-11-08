@@ -1,0 +1,81 @@
+# M4, CUJ 6: two Ricord.open blocks on two files. A record keeps the session it
+# was read from, so its save writes to its own file; data is copied from one
+# file into the other.
+module test/two_db_test
+
+import std/file
+import db/db/spec::{describe, it}
+import ricord
+import ricord/sessions::{Session}
+import test/spec_helper::*
+import test/models::*
+
+# A URL for *name* in the directory of RICORD_DATABASE_URL, with the file and
+# its WAL files removed.
+def sibling_url(name : String) : String
+  url = database_url
+  scheme = url.starts_with?("turso:") ? "turso:" : "sqlite3:"
+  path = url[scheme.bytesize, url.bytesize - scheme.bytesize]
+  slash = path.rindex('/')
+  dir = slash ? path[0, slash] : "."
+  file = "#{dir}/#{name}"
+  [file, "#{file}-wal", "#{file}-shm"].each { |p| File.delete(p) if File.exists?(p) }
+  "#{scheme}#{file}"
+end
+
+describe "two databases" do
+  it "keeps each record in its own session and copies data across" do
+    global_url = sibling_url("two_db_global.db")
+    account_url = sibling_url("two_db_account.db")
+    Ricord.open(global_url, log: true) do |global|
+      Account.create_table(global).or_panic
+      User.create_table(global).or_panic
+      Court.create_table(global).or_panic
+      User.create(global, email: "ann@example.com").or_panic
+      Court.create(global, name: "global court").or_panic
+      Court.create(global, name: "second court").or_panic
+      Ricord.open(account_url, log: true) do |account|
+        Account.create_table(account).or_panic
+        Court.create_table(account).or_panic
+        Case.create_table(account).or_panic
+        User.create_table(account).or_panic
+
+        user = User[global].find(1).or_panic
+        assert user.session.store.object_id == global.store.object_id, "the user belongs to the global session"
+        court = Court.create(account, name: "for #{user.email}", rank: user.id).or_panic
+        assert court.session.store.object_id == account.store.object_id
+
+        user.email = "ann@changed.example"
+        user.save.or_panic
+        assert User[global].find(1).or_panic.email == "ann@changed.example", "save wrote to global"
+        assert User[account].count.or_panic == 0_i64, "nothing written to the account file"
+        assert Court[account].count.or_panic == 1_i64
+        assert Court[global].count.or_panic == 2_i64
+
+        # Copy the global courts into the account file.
+        Court[global].order(:id).each do |c|
+          Court.create(account, name: "copy of #{c.name}").or_panic
+          nil
+        end.or_panic
+        names = Court[account].order(:id).to_a.or_panic.map(&.name)
+        assert names == ["for ann@example.com", "copy of global court", "copy of second court"]
+        assert Court[global].count.or_panic == 2_i64, "the source is unchanged"
+
+        # A record read from the account file saves back there.
+        copy = Court[account].find_by(name: "copy of global court").or_panic
+        assert !copy.nil?
+        if copy
+          copy.rank = 7_i64
+          copy.save.or_panic
+        end
+        assert Court[account].where(rank: 7_i64).count.or_panic == 1_i64
+        assert Court[global].where(rank: 7_i64).count.or_panic == 0_i64
+        nil
+      end.or_panic
+      nil
+    end.or_panic
+    # The files hold their data after both sessions end.
+    count = Ricord.open(account_url) { |account| Court[account].count.or_panic }.or_panic
+    assert count == 3_i64
+  end
+end

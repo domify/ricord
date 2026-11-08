@@ -17,7 +17,6 @@ jobs:
   test:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
-    continue-on-error: ${{ matrix.engine == 'turso' }}
     strategy:
       fail-fast: false
       matrix:

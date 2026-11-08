@@ -1,0 +1,79 @@
+# M4: session.request gives a child session with a fresh store, rolls back a
+# transaction a request left open, and ends the read transaction when the block ends.
+module test/request_test
+
+import db/db/spec::{describe, it}
+import ricord
+import ricord/sessions::{Session}
+import test/spec_helper::*
+import test/models::*
+
+describe "request" do
+  it "gives each block a fresh store on the same connection" do
+    with_db do |db|
+      3.times { |i| Court.create(db, name: "c#{i}").or_panic }
+      db.release
+      outer = db.store.size
+      sizes = [] of Int32
+      names = [] of Int32
+      3.times do
+        db.request do |r|
+          sizes << r.store.size
+          courts = Court[r].order(:id).to_a.or_panic
+          names << courts.size
+          assert courts[2].name == "c2"
+          assert r.store.size >= 3, "the request's records live in its store"
+          nil
+        end
+      end
+      assert sizes == [0, 0, 0], "each request starts with an empty store"
+      assert names == [3, 3, 3]
+      assert db.store.size == outer, "records read in a request do not pile up in the session's store"
+    end
+  end
+
+  it "sees writes made in an earlier request" do
+    with_db do |db|
+      db.request do |r|
+        Court.create(r, name: "one").or_panic
+        nil
+      end
+      count = db.request { |r| Court[r].count.or_panic }
+      assert count == 1_i64
+      label = db.request { |r| "#{Court[r].count.or_panic} court" }
+      assert label == "1 court", "a String returned from a request survives it"
+    end
+  end
+
+  it "rolls back a transaction a request left open" do
+    with_db do |db|
+      db.request do |r|
+        r.exec("BEGIN").or_panic
+        r.exec("INSERT INTO `courts` (`name`, `active`) VALUES ('left', 1)").or_panic
+        nil
+      end
+      assert db.conn.transaction_state.in_transaction?, "the raw transaction is still open"
+      start = db.statements.size
+      count = db.request { |r| Court[r].count.or_panic }
+      rolled = false
+      db.statements.each_with_index { |s, i| rolled = true if i >= start && s == "ROLLBACK" }
+      assert rolled, "the next request starts with ROLLBACK"
+      assert count == 0_i64, "the insert left open was rolled back"
+    end
+  end
+
+  it "releases the read transaction at the end of the block" do
+    with_db do |db|
+      Court.create(db, name: "a").or_panic
+      db.request do |r|
+        Court[r].count.or_panic
+        assert r.state.reading, "a read inside the request holds the read transaction"
+        assert db.conn.transaction_state.in_transaction?
+        nil
+      end
+      assert !db.state.reading
+      assert !db.conn.transaction_state.in_transaction?, "no transaction is open after the request"
+      assert db.statements.last == "COMMIT"
+    end
+  end
+end

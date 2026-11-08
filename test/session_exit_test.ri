@@ -1,0 +1,46 @@
+# M4, CUJ 7: values returned from a session block (a number, a String, a tuple)
+# and ids concatenated into a caller's array survive the block. Returning a
+# record or a block-made array is refused at compile time (test/refused/).
+module test/session_exit_test
+
+import db/db/spec::{describe, it}
+import ricord
+import test/spec_helper::*
+import test/models::*
+
+describe "session exit" do
+  it "keeps a number, a String, a tuple and concatenated ids after the block" do
+    with_db do |db|
+      Court.create(db, name: "Tartu", rank: 2).or_panic
+      Court.create(db, name: "Pärnu", rank: 5).or_panic
+      nil
+    end
+    url = database_url
+    count = Ricord.open(url) { |db| Court[db].count.or_panic }.or_panic
+    name = Ricord.open(url) do |db|
+      court = Court[db].order(:id).first.or_panic
+      court ? court.name : ""
+    end.or_panic
+    pair = Ricord.open(url) do |db|
+      court = Court[db].find(2).or_panic
+      # A tuple with a nilable member cannot leave a block (ris: "cannot
+      # return a value made in this def `open`'s scratch", also on plain
+      # Db.open), so the nilable rank is given a value first.
+      {court.id, court.name, court.rank || 0_i64}
+    end.or_panic
+    ids = [] of Int64
+    Ricord.open(url) { |db| Court[db].order(:id).pluck(:id, into: ids).or_panic }.or_panic
+    # Later sessions reuse memory; the values above must not change.
+    Ricord.open(url) do |db|
+      100.times { |i| Court.create(db, name: "filler #{i}").or_panic }
+      Court[db].to_a.or_panic
+      nil
+    end.or_panic
+    assert count == 2_i64
+    assert name == "Tartu"
+    assert pair[0] == 2_i64
+    assert pair[1] == "Pärnu"
+    assert pair[2] == 5_i64
+    assert ids == [1_i64, 2_i64]
+  end
+end

@@ -148,6 +148,13 @@ pub struct Session
     nil
   end
 
+  # Ends the read transaction and passes *value* through, so a block can end
+  # with `released(yield ...)` and its value is returned unchanged.
+  def released(value : T) : T forall T
+    release
+    value
+  end
+
   private def end_read : Nil
     return nil unless @state.reading
     run("COMMIT")
@@ -370,7 +377,14 @@ pub struct Session
     end
     store = Store.new
     child = Session.new(@conn, store, @dialect, @state, @log)
-    value = yield child
+    # The block's value is the def's last call, so a number, String or tuple
+    # returned from the block leaves it.
+    request_done(yield child)
+  end
+
+  # The end of a request: rolls back a write it left open, ends the read
+  # transaction, and passes *value* through.
+  private def request_done(value : T) : T forall T
     if @state.depth > 0
       run("ROLLBACK")
       @state.depth = 0
