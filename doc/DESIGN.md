@@ -1720,8 +1720,12 @@ wins:
 *   A `save` of an unchanged persisted record sends nothing and runs no callbacks (Grant sent
     nothing; Rails would still run the save callbacks).
 *   Scope (part B) is a flat pair list in the store (`scope_cols`, `scope_vals`, ended by -1).
-    It passes only through `has_many`; records loaded by a group query or `includes` get no
-    scope (open). `update_all` is added early, limited by the scope.
+    It passes through `has_many`, `includes` and group loading: a preload query adds the
+    owners' pairs mapped to the target, and a scoped owner's children get the scope
+    `owner.children` gives; a `belongs_to`/`has_one` group load takes one query per distinct
+    mapped scope in the group (an unscoped group keeps one query), and the targets keep that
+    scope, so changing a scoped column returns `ScopeError`. `update_all` is added early,
+    limited by the scope.
 *   Rollback state (RICORD_SPEC 5.9): the store keeps an undo log. The first change of a record
     at a write depth logs its old flags, slot values and changed marks, linked to its earlier
     entry; records read inside the write are not logged. ROLLBACK / ROLLBACK TO replay the log

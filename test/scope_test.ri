@@ -10,6 +10,22 @@ import ricord/failures::{ScopeError}
 import test/spec_helper::*
 import test/models::*
 
+# Gives record *index* the scope [(col, value)], as a scoped read would.
+def scope_to(db : Session, index : Int32, col : Int32, value : Int64) : Nil
+  start = db.store.scope_cols.size
+  db.store.add_scope_pair(col, value)
+  db.store.end_scope
+  db.store.scopes[index] = start
+  nil
+end
+
+# The SELECT statements logged since entry *start*.
+def selects_since(db : Session, start : Int32) : Int32
+  n = 0
+  db.statements.each_with_index { |s, i| n += 1 if i >= start && s.starts_with?("SELECT") }
+  n
+end
+
 describe "inherited scope" do
   it "gives a court read through account.courts the scope (account_id, id)" do
     with_db do |db|
@@ -174,6 +190,144 @@ describe "inherited scope" do
         made.court_id = 12345
         assert made.update(title: "z").is_a?(ScopeError)
       end
+    end
+  end
+
+  it "carries the scope into children preloaded by includes" do
+    with_db do |db|
+      a = Account.create(db, name: "a").or_panic
+      b = Account.create(db, name: "b").or_panic
+      court = Court.create(db, name: "x", account_id: a.id).or_panic
+      Case.create(db, court_id: court.id, title: "foreign", account_id: b.id).or_panic
+      Case.create(db, court_id: court.id, title: "mine", account_id: a.id).or_panic
+      start = db.statements.size
+      courts = a.courts.includes(:cases).to_a.or_panic
+      assert selects_since(db, start) == 2
+      assert db.statements.any? { |s| s.includes?("`court_id` IN (?)") && s.includes?("(`account_id` = ?)") }
+      again = db.statements.size
+      cases = courts[0].cases.to_a.or_panic
+      assert selects_since(db, again) == 0, "the preloaded range is read"
+      assert cases.size == 1
+      assert cases[0].title == "mine"
+      # The same scope as reading through court.cases: (court_id, account_id).
+      at = db.store.scopes[cases[0].index]
+      assert at >= 0
+      assert db.store.scope_cols[at] == Case.column_index(:court_id)
+      assert db.store.scope_vals[at] == court.id
+      assert db.store.scope_cols[at + 1] == Case.column_index(:account_id)
+      assert db.store.scope_vals[at + 1] == a.id
+      assert db.store.scope_cols[at + 2] == -1
+      cases[0].account_id = b.id
+      assert cases[0].save.is_a?(ScopeError)
+      # An unscoped includes keeps both children and no scope.
+      all = Court[db].includes(:cases).to_a.or_panic
+      loose = all[0].cases.to_a.or_panic
+      assert loose.size == 2
+      assert db.store.scopes[loose[0].index] == -1
+    end
+  end
+
+  it "carries the scope into a has_one target and skips a foreign row" do
+    with_db do |db|
+      a = Account.create(db, name: "a").or_panic
+      b = Account.create(db, name: "b").or_panic
+      court = Court.create(db, name: "x", account_id: a.id).or_panic
+      # Lower id, same court_id, another account: outside the scope.
+      Case.create(db, court_id: court.id, title: "foreign", account_id: b.id).or_panic
+      Case.create(db, court_id: court.id, title: "mine", account_id: a.id).or_panic
+      scoped = a.courts.first.or_panic
+      if scoped
+        lead = scoped.lead_case.or_panic
+        assert !lead.nil?
+        if lead
+          assert lead.title == "mine"
+          at = db.store.scopes[lead.index]
+          assert at >= 0
+          assert db.store.scope_cols[at] == Case.column_index(:account_id)
+          assert db.store.scope_vals[at] == a.id
+          assert db.store.scope_cols[at + 1] == -1
+          lead.account_id = b.id
+          assert lead.save.is_a?(ScopeError)
+        end
+      end
+      # Unscoped, the lowest id is the lead case.
+      free = Court[db].first.or_panic
+      if free
+        lead = free.lead_case.or_panic
+        assert !lead.nil?
+        if lead
+          assert lead.title == "foreign"
+          assert db.store.scopes[lead.index] == -1
+        end
+      end
+    end
+  end
+
+  it "carries the scope into a belongs_to target and skips a foreign row" do
+    with_db do |db|
+      a = Account.create(db, name: "a").or_panic
+      b = Account.create(db, name: "b").or_panic
+      mine = Court.create(db, name: "x", account_id: a.id).or_panic
+      other = Court.create(db, name: "y", account_id: b.id).or_panic
+      Case.create(db, court_id: mine.id, title: "m", account_id: a.id).or_panic
+      Case.create(db, court_id: other.id, title: "o", account_id: a.id).or_panic
+      cases = Case[db].order(:id).to_a.or_panic
+      cases.each { |c| scope_to(db, c.index, Case.column_index(:account_id), a.id) }
+      start = db.statements.size
+      found = cases[0].court.or_panic
+      assert selects_since(db, start) == 1
+      assert !found.nil?
+      if found
+        assert found.name == "x"
+        at = db.store.scopes[found.index]
+        assert at >= 0
+        assert db.store.scope_cols[at] == Court.column_index(:account_id)
+        assert db.store.scope_vals[at] == a.id
+        assert db.store.scope_cols[at + 1] == -1
+        found.account_id = b.id
+        assert found.save.is_a?(ScopeError)
+      end
+      # Court y has the key but account b: not returned.
+      assert cases[1].court.or_panic.nil?
+      # The scope comes from court.cases too: case.court keeps account_id.
+      scoped = a.courts.first.or_panic
+      if scoped
+        through = scoped.cases.to_a.or_panic
+        back = through[0].court.or_panic
+        assert !back.nil?
+        if back
+          at = db.store.scopes[back.index]
+          assert at >= 0
+          assert db.store.scope_vals[at] == a.id
+        end
+      end
+    end
+  end
+
+  it "loads a mixed-scope group with one query per scope" do
+    with_db do |db|
+      a = Account.create(db, name: "a").or_panic
+      b = Account.create(db, name: "b").or_panic
+      c1 = Court.create(db, name: "x", account_id: a.id).or_panic
+      c2 = Court.create(db, name: "y", account_id: a.id).or_panic
+      c3 = Court.create(db, name: "z", account_id: b.id).or_panic
+      Case.create(db, court_id: c1.id, title: "x-b", account_id: b.id).or_panic
+      Case.create(db, court_id: c1.id, title: "x-a", account_id: a.id).or_panic
+      Case.create(db, court_id: c2.id, title: "y-a", account_id: a.id).or_panic
+      Case.create(db, court_id: c3.id, title: "z-a", account_id: a.id).or_panic
+      Case.create(db, court_id: c3.id, title: "z-b", account_id: b.id).or_panic
+      courts = Court[db].order(:id).to_a.or_panic
+      courts.each do |c|
+        scope_to(db, c.index, Court.column_index(:account_id), c.account_id == a.id ? a.id : b.id)
+      end
+      start = db.statements.size
+      titles = [] of String
+      courts.each do |c|
+        lead = c.lead_case.or_panic
+        titles << (lead ? lead.title : "-")
+      end
+      assert selects_since(db, start) == 2, "one query per distinct scope"
+      assert titles == ["x-a", "y-a", "z-b"]
     end
   end
 end

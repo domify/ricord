@@ -246,6 +246,64 @@ pub def child_scope(store : Store, owner : Int32, fk : Int32, map : Array(Int32)
   start
 end
 
+# The pairs of *scope* mapped by *map* (source column index => target column
+# index or -1) into a new scope, leaving out pairs mapped to -1, to id or to
+# *skip*: its start, -1 when no pair maps.
+pub def mapped_scope(store : Store, scope : Int32, map : Array(Int32), skip : Int32) : Int32
+  return -1 if scope < 0
+  start = store.scope_cols.size
+  at = scope
+  while store.scope_cols[at] >= 0
+    target = map[store.scope_cols[at]]
+    store.add_scope_pair(target, store.scope_vals[at]) if target > 0 && target != skip
+    at += 1
+  end
+  return -1 if store.scope_cols.size == start
+  store.end_scope
+  start
+end
+
+# Whether scopes *a* and *b* hold the same pairs in the same order.
+pub def same_scope(store : Store, a : Int32, b : Int32) : Bool
+  return a == b if a < 0 || b < 0
+  i = 0
+  while true
+    ca = store.scope_cols[a + i]
+    return false if ca != store.scope_cols[b + i]
+    return true if ca < 0
+    va = store.scope_vals[a + i]
+    vb = store.scope_vals[b + i]
+    same = va.is_a?(TextSpan) && vb.is_a?(TextSpan) ? store.span_text(va) == store.span_text(vb) : va == vb
+    return false unless same
+    i += 1
+  end
+  false
+end
+
+# Sorts the group records first ... first + count - 1 by their scope mapped
+# through *map* (see `mapped_scope`): appends one tag per record to *tags*, an
+# index into *classes*, which gets each distinct mapped scope (-1 for none).
+pub def scope_classes(store : Store, first : Int32, count : Int32, map : Array(Int32), skip : Int32, tags : Array(Int32), classes : Array(Int32)) : Nil
+  last_src = -2
+  last_tag = -1
+  count.times do |k|
+    src = store.scopes[first + k]
+    if src != last_src
+      m = mapped_scope(store, src, map, skip)
+      found = -1
+      classes.each_with_index { |c, j| found = j if found < 0 && same_scope(store, c, m) }
+      if found < 0
+        found = classes.size
+        classes << m
+      end
+      last_src = src
+      last_tag = found
+    end
+    tags << last_tag
+  end
+  nil
+end
+
 # Sets each scope column of record *index* to its pair's value.
 pub def apply_scope(store : Store, index : Int32, scope : Int32) : Nil
   return nil if scope < 0
@@ -1990,22 +2048,31 @@ pub macro model(name, &block)
 
         def self.__load_{{an}}(session : ::Ricord::Sessions::Session, first : Int32, count : Int32) : Nil | ::Ricord::Failures::DatabaseError
           store = session.store
-          keys = [] of Int64
-          ::Ricord::Associations.group_keys(store, first, count, {{ai}}, {{fci}}, keys)
-          targets = [] of Int32
-          i = 0
-          while i < keys.size
-            chunk = [] of Int64
-            while i < keys.size && chunk.size < ::Ricord::Associations::CHUNK
-              chunk << keys[i]
-              i += 1
+          # One query per distinct scope of the group mapped to {{target}};
+          # the targets keep that scope.
+          tags = [] of Int32
+          classes = [] of Int32
+          ::Ricord::Model.scope_classes(store, first, count, SCOPE_MAP_{{an.id.upcase}}, -1, tags, classes)
+          ci = 0
+          while ci < classes.size
+            keys = [] of Int64
+            ::Ricord::Associations.group_keys(store, first, count, {{ai}}, {{fci}}, keys, tags, ci)
+            targets = [] of Int32
+            i = 0
+            while i < keys.size
+              chunk = [] of Int64
+              while i < keys.size && chunk.size < ::Ricord::Associations::CHUNK
+                chunk << keys[i]
+                i += 1
+              end
+              at = store.size
+              rows = {{target}}::Query.new(session, -1, -1, nil, nil, 0_i64, -1, -1, -1, false, classes[ci]).where(id: chunk).read_rows
+              return rows if rows.is_a?(::Ricord::Failures::DatabaseError)
+              rows.times { |k| targets << at + k }
             end
-            at = store.size
-            rows = {{target}}[session].where(id: chunk).read_rows
-            return rows if rows.is_a?(::Ricord::Failures::DatabaseError)
-            rows.times { |k| targets << at + k }
+            ::Ricord::Associations.link_group(store, first, count, {{ai}}, {{fci}}, targets, 0, tags, ci)
+            ci += 1
           end
-          ::Ricord::Associations.link_group(store, first, count, {{ai}}, {{fci}}, targets, 0)
           nil
         end
       {% elsif kind == "has_one" %}
@@ -2023,22 +2090,32 @@ pub macro model(name, &block)
 
         def self.__load_{{an}}(session : ::Ricord::Sessions::Session, first : Int32, count : Int32) : Nil | ::Ricord::Failures::DatabaseError
           store = session.store
-          keys = [] of Int64
-          ::Ricord::Associations.group_keys(store, first, count, {{ai}}, 0, keys)
-          targets = [] of Int32
-          i = 0
-          while i < keys.size
-            chunk = [] of Int64
-            while i < keys.size && chunk.size < ::Ricord::Associations::CHUNK
-              chunk << keys[i]
-              i += 1
+          fkcol = {{target}}.column_index({{fk.symbolize}})
+          # One query per distinct scope of the group mapped to {{target}}
+          # (without {{fk}}); the targets keep that scope.
+          tags = [] of Int32
+          classes = [] of Int32
+          ::Ricord::Model.scope_classes(store, first, count, SCOPE_MAP_{{an.id.upcase}}, fkcol, tags, classes)
+          ci = 0
+          while ci < classes.size
+            keys = [] of Int64
+            ::Ricord::Associations.group_keys(store, first, count, {{ai}}, 0, keys, tags, ci)
+            targets = [] of Int32
+            i = 0
+            while i < keys.size
+              chunk = [] of Int64
+              while i < keys.size && chunk.size < ::Ricord::Associations::CHUNK
+                chunk << keys[i]
+                i += 1
+              end
+              at = store.size
+              rows = {{target}}::Query.new(session, -1, -1, nil, nil, 0_i64, -1, -1, -1, false, classes[ci]).where({{fk}}: chunk).order(:id).read_rows
+              return rows if rows.is_a?(::Ricord::Failures::DatabaseError)
+              rows.times { |k| targets << at + k }
             end
-            at = store.size
-            rows = {{target}}[session].where({{fk}}: chunk).order(:id).read_rows
-            return rows if rows.is_a?(::Ricord::Failures::DatabaseError)
-            rows.times { |k| targets << at + k }
+            ::Ricord::Associations.link_group(store, first, count, {{ai}}, 0, targets, fkcol, tags, ci)
+            ci += 1
           end
-          ::Ricord::Associations.link_group(store, first, count, {{ai}}, 0, targets, {{target}}.column_index({{fk.symbolize}}))
           nil
         end
       {% else %}
@@ -2053,22 +2130,41 @@ pub macro model(name, &block)
         # owners, ordered by {{fk}}, id so each owner's children are contiguous.
         def self.__load_{{an}}(session : ::Ricord::Sessions::Session, first : Int32, count : Int32) : Nil | ::Ricord::Failures::DatabaseError
           store = session.store
-          keys = [] of Int64
-          ::Ricord::Associations.group_keys(store, first, count, {{ai}}, 0, keys)
-          children = [] of Int32
-          i = 0
-          while i < keys.size
-            chunk = [] of Int64
-            while i < keys.size && chunk.size < ::Ricord::Associations::CHUNK
-              chunk << keys[i]
-              i += 1
+          fkcol = {{target}}.column_index({{fk.symbolize}})
+          # One query per distinct owner scope mapped to {{target}} (without
+          # {{fk}}); a scoped owner's children get the scope `owner.{{an}}`
+          # would give them.
+          tags = [] of Int32
+          classes = [] of Int32
+          ::Ricord::Model.scope_classes(store, first, count, SCOPE_MAP_{{an.id.upcase}}, fkcol, tags, classes)
+          ci = 0
+          while ci < classes.size
+            keys = [] of Int64
+            ::Ricord::Associations.group_keys(store, first, count, {{ai}}, 0, keys, tags, ci)
+            children = [] of Int32
+            i = 0
+            while i < keys.size
+              chunk = [] of Int64
+              while i < keys.size && chunk.size < ::Ricord::Associations::CHUNK
+                chunk << keys[i]
+                i += 1
+              end
+              at = store.size
+              rows = {{target}}::Query.new(session, -1, -1, nil, nil, 0_i64, -1, -1, -1, false, classes[ci]).where({{fk}}: chunk).order({{fk.symbolize}}, :id).read_rows
+              return rows if rows.is_a?(::Ricord::Failures::DatabaseError)
+              rows.times { |k| children << at + k }
             end
-            at = store.size
-            rows = {{target}}[session].where({{fk}}: chunk).order({{fk.symbolize}}, :id).read_rows
-            return rows if rows.is_a?(::Ricord::Failures::DatabaseError)
-            rows.times { |k| children << at + k }
+            ::Ricord::Associations.link_children(store, first, count, {{ai}}, children, fkcol, tags, ci)
+            count.times do |k|
+              owner = first + k
+              if tags[k] == ci && store.scopes[owner] >= 0
+                scope = ::Ricord::Model.child_scope(store, owner, fkcol, SCOPE_MAP_{{an.id.upcase}})
+                start = ::Ricord::Associations.range_start(store, owner, {{ai}})
+                ::Ricord::Associations.range_count(store, owner, {{ai}}).times { |n| store.scopes[store.links[start + n]] = scope }
+              end
+            end
+            ci += 1
           end
-          ::Ricord::Associations.link_children(store, first, count, {{ai}}, children, {{target}}.column_index({{fk.symbolize}}))
           nil
         end
       {% end %}

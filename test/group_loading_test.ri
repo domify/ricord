@@ -135,7 +135,8 @@ describe "group loading" do
     with_db do |db|
       Account.create(db, name: "a").or_panic
       2.times { |i| Court.create(db, name: "c#{i}", account_id: 1).or_panic }
-      4.times { |i| Case.create(db, court_id: (i % 2) + 1, title: "t#{i}").or_panic }
+      # account_id 1: the cases are inside account.courts' inherited scope.
+      4.times { |i| Case.create(db, court_id: (i % 2) + 1, title: "t#{i}", account_id: 1).or_panic }
       account = Account[db].find(1).or_panic
       start = db.statements.size
       cases = Case[db].order(:id).to_a.or_panic

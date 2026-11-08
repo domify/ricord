@@ -86,13 +86,18 @@ pub def range_count(store : Store, index : Int32, assoc : Int32) : Int32
   store.link_ranges[range_at(store, index, assoc) + 1]
 end
 
+# Whether group record *k* has tag *tag* (always without *tags*).
+pub def tagged?(tags : Array(Int32) | Nil, k : Int32, tag : Int32) : Bool
+  tags.nil? ? true : tags[k] == tag
+end
+
 # Appends to *into* the distinct non-nil Int64 values of column *col* over the
 # group records first ... first + count - 1 whose association *assoc* is not
-# loaded.
-pub def group_keys(store : Store, first : Int32, count : Int32, assoc : Int32, col : Int32, into : Array(Int64)) : Nil
+# loaded. With *tags*, only the records whose tag is *tag*.
+pub def group_keys(store : Store, first : Int32, count : Int32, assoc : Int32, col : Int32, into : Array(Int64), tags : Array(Int32) | Nil = nil, tag : Int32 = 0) : Nil
   count.times do |k|
     r = first + k
-    next if loaded?(store, r, assoc)
+    next if loaded?(store, r, assoc) || !tagged?(tags, k, tag)
     v = store.slot(r, col)
     if v.is_a?(Int64)
       into << v unless into.includes?(v)
@@ -102,11 +107,12 @@ pub def group_keys(store : Store, first : Int32, count : Int32, assoc : Int32, c
 end
 
 # Links each unloaded group record to the target in *targets* whose column
-# *target_col* equals the record's column *col*, or to -1.
-pub def link_group(store : Store, first : Int32, count : Int32, assoc : Int32, col : Int32, targets : Array(Int32), target_col : Int32) : Nil
+# *target_col* equals the record's column *col*, or to -1. With *tags*, only
+# the records whose tag is *tag*.
+pub def link_group(store : Store, first : Int32, count : Int32, assoc : Int32, col : Int32, targets : Array(Int32), target_col : Int32, tags : Array(Int32) | Nil = nil, tag : Int32 = 0) : Nil
   count.times do |k|
     r = first + k
-    next if loaded?(store, r, assoc)
+    next if loaded?(store, r, assoc) || !tagged?(tags, k, tag)
     v = store.slot(r, col)
     found = -1
     unless v.nil?
@@ -119,10 +125,11 @@ end
 
 # Gives each owner first ... first + count - 1 its range of *children*, which
 # are ordered by the column *fk*: the children whose fk is the owner's id.
-pub def link_children(store : Store, first : Int32, count : Int32, assoc : Int32, children : Array(Int32), fk : Int32) : Nil
+# With *tags*, only the owners whose tag is *tag*.
+pub def link_children(store : Store, first : Int32, count : Int32, assoc : Int32, children : Array(Int32), fk : Int32, tags : Array(Int32) | Nil = nil, tag : Int32 = 0) : Nil
   count.times do |k|
     r = first + k
-    next if loaded?(store, r, assoc)
+    next if loaded?(store, r, assoc) || !tagged?(tags, k, tag)
     id = store.slot(r, 0)
     start = store.links.size
     n = 0
