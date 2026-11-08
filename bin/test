@@ -101,6 +101,36 @@ workers = slot_env.map do |slot|
 end
 workers.each(&:join)
 
+# The example app, once on this engine, against the first slot's database.
+if ARGV.empty?
+  example = "examples/tape_web/app_test.ri"
+  slot = slot_env.first
+  output, status = run(ENV.to_h.merge(slot).merge("DATABASE_URL" => slot["RICORD_DATABASE_URL"]),
+    ris, "test", *flags, example)
+  puts output
+  errors << "test failed: #{example}" unless status.success?
+end
+
+# doc/GUIDE.md: each ```ris fence becomes build/guide/<n>_test.ri, built and run.
+if ARGV.empty?
+  if File.exist?("doc/GUIDE.md")
+    fences = File.read("doc/GUIDE.md").scan(/^```ris[ \t]*\n(.*?)^```[ \t]*$/m).map(&:first)
+    FileUtils.rm_rf("build/guide")
+    FileUtils.mkdir_p("build/guide")
+    slot = slot_env.first
+    fences.each_with_index do |code, index|
+      file = File.join("build", "guide", "#{index + 1}_test.ri")
+      File.write(file, code)
+      output, status = run(ENV.to_h.merge(slot), ris, "test", *flags, file)
+      puts output
+      errors << "guide fence #{index + 1} failed: #{file}" unless status.success?
+    end
+    puts "doc/GUIDE.md: #{fences.size} fences run"
+  else
+    puts "doc/GUIDE.md not found: guide fences skipped"
+  end
+end
+
 # Format and check the library and the tests.
 dirs = %w[ricord.ri ricord test].select { |path| File.exist?(path) }
 unless dirs.empty?
