@@ -111,7 +111,7 @@ if ARGV.empty?
   errors << "test failed: #{example}" unless status.success?
 end
 
-# doc/GUIDE.md: each ```ris fence becomes build/guide/<n>_test.ri, built and run.
+# doc/GUIDE.md: each ```ris fence becomes build/guide/fence<n>_test.ri, built and run.
 if ARGV.empty?
   if File.exist?("doc/GUIDE.md")
     fences = File.read("doc/GUIDE.md").scan(/^```ris[ \t]*\n(.*?)^```[ \t]*$/m).map(&:first)
@@ -119,8 +119,10 @@ if ARGV.empty?
     FileUtils.mkdir_p("build/guide")
     slot = slot_env.first
     fences.each_with_index do |code, index|
-      file = File.join("build", "guide", "#{index + 1}_test.ri")
-      File.write(file, code)
+      # A module line lets the file find ris.mod's packages; names may not start with a digit.
+      name = "fence#{index + 1}_test"
+      file = File.join("build", "guide", "#{name}.ri")
+      File.write(file, "module build/guide/#{name}\n\n#{code}")
       output, status = run(ENV.to_h.merge(slot), ris, "test", *flags, file)
       puts output
       errors << "guide fence #{index + 1} failed: #{file}" unless status.success?

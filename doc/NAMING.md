@@ -1,45 +1,47 @@
-# Native ris names
+# Names in Ricord
 
-Preserve Grant's inheritance, model macro DSL and public API wherever ris permits it. Module paths replace Crystal namespaces: `grant/base` exports `Base` (qualified as `Grant::Base::Base`), `grant/adapter/sqlite` exports `Connection`, and `grant/errors` exports error values.
+Ricord keeps Active Record's names where ris allows them. These rules decide the rest.
 
-SPEC.md III.1.7 prohibits trailing `!` in declaration names. Raising variants (`find!`, `create!`, `save!`, `update!`, `first!`, `find_by!`, etc.) become `<name>_strict`, returning a normal result or an error implementing `Error`. Callers propagate with postfix `!` or unwrap with `.or_panic`.
+## One method per action
 
-In-place relation mutators (`where!`, `order!`, `joins!`, `or!`, etc.) become `<name>_in_place`.
+Each action has one method: `find`, `find_by`, `first`, `last`, `create`, `save`, `update`,
+`destroy`, `reload`. A failure is returned as an error value, a member of the method's result
+union (`RecordNotFound`, `RecordInvalid`, `ScopeError`, `CallbackError`, `DatabaseError`,
+`AfterCommitError`). Nothing raises, so there is no second "strict" or "bang" form.
 
-Grouped negation `where_not!` becomes `where_not_in_place`; `where.not` retains its name.
+The caller decides what a failure means: check it with `is_a?` or `case`, return it to its own
+caller, or stop the program with `.or_panic` where a failure is a bug.
 
-Crystal names that are ris keywords receive documented aliases: `import` becomes `import_records`; query `group` becomes `group_records` because ris reserves `group` for task groups (the existing `group_by` API is also retained). Relation `and`/`or` (`builder.or(:age, :gt, 23)`) become `and_where`/`or_where`, and the in-place `and!`/`or!` become `and_in_place`/`or_in_place`. Add further keyword aliases here as encountered.
+```text
+court = Court[db].find(id).or_panic         # a missing row is a bug here
+result = court.save
+return result if result.is_a?(::Ricord::Failures::Failure)
+```
 
-`raise` becomes a returned error union member; `rescue` becomes a union check. Transactions roll back if the block returns an error. Crystal `Grant::Transaction::Rollback` is currently exported as `Rollback` from `grant/errors`.
+A method that may find nothing (`find_by`, `first`, `last`, `pick`) returns `nil` for nothing
+and keeps errors for failures.
 
-The native prelude has no `same?`; preserve identity assertions by comparing `object_id`.
+## No `!` in names
 
-Typed lazy encryption strict readers follow the same raising-variant rule: `email!` becomes `email_strict`, returning `String | ErrorBase` (including `NilAssertionError` for an absent value); ordinary and question-mark readers also return codec errors when decryption fails.
+ris forbids a trailing `!` in declaration names (SPEC.md, section III.1.7, in
+`~/contribute/ris1/doc/reference/iyi/source/SPEC.md`). Grant's `find!`, `save!`, `create!`,
+`first!` and the like are gone, not renamed; the one method returns the error instead. The
+`_strict` suffix Grant used for them is gone too.
 
-Seed registry `clear_definitions!` becomes `clear_definitions_in_place`.
-Schema adapter `reset_schema_caches!` becomes `reset_schema_caches_in_place`.
+## Allowed forms
 
-Record `readonly!` becomes `readonly_in_place`; it marks the receiver read-only.
+* `_in_place` marks a method that changes its receiver, where one is needed. Ricord's query
+  methods do not: every query method returns a new query.
+* A name that is a ris keyword gets an alias with a plain word. Ricord has `or_where` (Grant
+  also had `and_where`, `group_records` and `import_records`, which Ricord does not offer).
+* `build` stands in for `new` on an association (`owner.cases.build(...)`): ris treats an
+  instance method named `new` as in-place construction.
+* A question mark ends a method that answers a `Bool`: `changed?`, `persisted?`,
+  `new_record?`, `destroyed?`, `exists?`, `any?`, `empty?`, `valid?`.
 
-Query cache `invalidate!` becomes `invalidate_in_place`.
+## Modules and types
 
-Migration `disable_ddl_transaction!` becomes `disable_ddl_transaction_in_place`.
-
-Schema `check_pending!` and `maintain_test_schema!` use the `_strict` suffix.
-
-Schema `check_protected_environments!` and `set_environment!` use the `_strict` suffix.
-
-Schema `verify!` and model `verify_schema!` use the `_strict` suffix.
-
-Errors collection `merge!` becomes `merge_in_place`.
-
-Database task `guard!` becomes `guard_strict`.
-
-Schema cache `reset!` becomes `reset_in_place`; `load_all!` becomes `load_all_in_place`.
-
-Errors collection `uniq!` and `copy!` become `uniq_in_place` and `copy_in_place`.
-
-Dirty attribute `restore_<attribute>!` becomes `restore_<attribute>_in_place`.
-
-Dirty `restore_attribute!`, `attribute_will_change!`, and generated `<attribute>_will_change!`
-use the `_in_place` suffix.
+A module path is also a namespace. A module that holds a type of the same name is plural:
+`ricord/sessions` holds `Session`, `ricord/failures` holds the error structs (`Error` is their
+union), `ricord/storage` holds `Store`, `ricord/values` holds `TextSpan`. Generated code names
+every type fully (`::Ricord::Failures::DatabaseError`), since it is expanded in the user's file.
