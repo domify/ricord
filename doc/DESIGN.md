@@ -1703,7 +1703,7 @@ queue".
 
 ### M3: associations, scope, group loading, dependent
 
-**As built (M2-M3 part A, 2026-11-08).** Where the code differs from the items below, the code
+**As built (M2-M3, 2026-11-08).** Where the code differs from the items below, the code
 wins:
 
 *   Identifiers are quoted with backticks: with double quotes SQLite reads a name that is not a
@@ -1718,6 +1718,11 @@ wins:
 *   Loaders read rows with `read_rows` (no preload); `to_a` builds its array after preloading,
     because recursion through a growing local array is refused.
 *   A `save` of an unchanged record still sends `BEGIN IMMEDIATE` and `COMMIT` (open).
+*   Scope (part B) is a flat pair list in the store (`scope_cols`, `scope_vals`, ended by -1).
+    It passes only through `has_many`; records loaded by a group query or `includes` get no
+    scope (open). `update_all` is added early, limited by the scope.
+*   A child destroyed by `dependent: :destroy` keeps its destroyed flag when the parent's write
+    rolls back (open; same as the store-flag rollback issue from M1).
 
 Goal: associations read through the record's session; `belongs_to` and `has_one` over a group
 of N records take one query, not N; `has_many` takes one query with `includes`; scope follows

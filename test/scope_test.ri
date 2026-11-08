@@ -1,0 +1,179 @@
+# M3: scope inherited through associations: court.cases carries account_id,
+# create sets it, every query and update_all limit by it, changing a scoped
+# column returns ScopeError, and Model[db] reads have no scope.
+module test/scope_test
+
+import db/db/spec::{describe, it}
+import ricord
+import ricord/sessions::{Session}
+import ricord/failures::{ScopeError}
+import test/spec_helper::*
+import test/models::*
+
+describe "inherited scope" do
+  it "gives a court read through account.courts the scope (account_id, id)" do
+    with_db do |db|
+      a = Account.create(db, name: "a").or_panic
+      Court.create(db, name: "x", account_id: a.id).or_panic
+      court = a.courts.to_a.or_panic[0]
+      at = db.store.scopes[court.index]
+      assert at >= 0
+      assert db.store.scope_cols[at] == Court.column_index(:account_id)
+      assert db.store.scope_vals[at] == a.id
+      assert db.store.scope_cols[at + 1] == -1
+    end
+  end
+
+  it "has no scope on a record read by Model[db]" do
+    with_db do |db|
+      a = Account.create(db, name: "a").or_panic
+      c = Court.create(db, name: "x", account_id: a.id).or_panic
+      found = Court[db].find(c.id).or_panic
+      assert db.store.scopes[found.index] == -1
+      all = Court[db].to_a.or_panic
+      assert db.store.scopes[all[0].index] == -1
+    end
+  end
+
+  it "carries account_id from court into court.cases" do
+    with_db do |db|
+      a = Account.create(db, name: "a").or_panic
+      Court.create(db, name: "x", account_id: a.id).or_panic
+      court = a.courts.first.or_panic
+      assert !court.nil?
+      if court
+        q = court.cases
+        at = q.scope
+        assert db.store.scope_cols[at] == Case.column_index(:court_id)
+        assert db.store.scope_vals[at] == court.id
+        assert db.store.scope_cols[at + 1] == Case.column_index(:account_id)
+        assert db.store.scope_vals[at + 1] == a.id
+        assert db.store.scope_cols[at + 2] == -1
+      end
+    end
+  end
+
+  it "adds AND col = ? per pair to every query through the association" do
+    with_db do |db|
+      a = Account.create(db, name: "a").or_panic
+      b = Account.create(db, name: "b").or_panic
+      court = Court.create(db, name: "x", account_id: a.id).or_panic
+      Case.create(db, court_id: court.id, title: "mine", account_id: a.id).or_panic
+      # Same court, another account: outside the scope.
+      Case.create(db, court_id: court.id, title: "foreign", account_id: b.id).or_panic
+      scoped = a.courts.first.or_panic
+      if scoped
+        start = db.statements.size
+        rows = scoped.cases.to_a.or_panic
+        assert rows.size == 1
+        assert rows[0].title == "mine"
+        assert db.statements[start].includes?("WHERE (`court_id` = ?) AND (`account_id` = ?)")
+        assert scoped.cases.count.or_panic == 1_i64
+        assert scoped.cases.where(title: "foreign").first.or_panic.nil?
+        assert scoped.cases.where("title = ?", "foreign").count.or_panic == 0_i64
+        # The scope wraps an OR chain: (a) OR (b) stays inside it.
+        assert scoped.cases.where(title: "nope").or_where(title: "foreign").count.or_panic == 0_i64
+        assert scoped.cases.where(title: "nope").or_where(title: "mine").count.or_panic == 1_i64
+      end
+      # Without the inherited scope both rows are the court's.
+      assert court.cases.count.or_panic == 2_i64
+    end
+  end
+
+  it "sets the scope columns on create and build through the association" do
+    with_db do |db|
+      a = Account.create(db, name: "a").or_panic
+      Court.create(db, name: "x", account_id: a.id).or_panic
+      court = a.courts.first.or_panic
+      if court
+        made = court.cases.create(title: "t").or_panic
+        assert made.court_id == court.id
+        assert made.account_id == a.id
+        assert Case[db].find(made.id).or_panic.account_id == a.id
+        built = court.cases.build(title: "u")
+        assert built.account_id == a.id
+        assert db.store.scopes[built.index] >= 0
+      end
+    end
+  end
+
+  it "limits update_all by the scope" do
+    with_db do |db|
+      a = Account.create(db, name: "a").or_panic
+      b = Account.create(db, name: "b").or_panic
+      court = Court.create(db, name: "x", account_id: a.id).or_panic
+      Case.create(db, court_id: court.id, title: "mine", account_id: a.id).or_panic
+      Case.create(db, court_id: court.id, title: "foreign", account_id: b.id).or_panic
+      scoped = a.courts.first.or_panic
+      if scoped
+        start = db.statements.size
+        assert scoped.cases.update_all(title: "renamed").or_panic == 1_i64
+        assert db.statements.any? { |s| s.starts_with?("UPDATE `cases` SET `title` = ? WHERE (`court_id` = ?) AND (`account_id` = ?)") }
+        assert db.statements.size > start
+      end
+      assert Case[db].where(title: "renamed").count.or_panic == 1_i64
+      assert Case[db].where(title: "foreign").count.or_panic == 1_i64
+      # On an unscoped query it touches every matching row.
+      assert Case[db].update_all(title: "all").or_panic == 2_i64
+    end
+  end
+
+  it "runs update_all inside an open write without its own BEGIN" do
+    with_db do |db|
+      a = Account.create(db, name: "a").or_panic
+      Court.create(db, name: "x", account_id: a.id).or_panic
+      Court.create(db, name: "y", account_id: a.id).or_panic
+      db.write do |tx|
+        start = db.statements.size
+        Court[tx].update_all(rank: 3).or_panic
+        assert db.statements.size == start + 1
+        nil
+      end.or_panic
+      assert Court[db].where(rank: 3).count.or_panic == 2_i64
+    end
+  end
+
+  it "returns ScopeError when a scoped column changes and leaves the row" do
+    with_db do |db|
+      a = Account.create(db, name: "a").or_panic
+      b = Account.create(db, name: "b").or_panic
+      Court.create(db, name: "x", account_id: a.id).or_panic
+      court = a.courts.first.or_panic
+      if court
+        court.account_id = b.id
+        start = db.statements.size
+        result = court.save
+        assert result.is_a?(ScopeError)
+        assert db.statements.size == start
+        # Setting the scope's own value is no change.
+        court.account_id = a.id
+        court.name = "renamed"
+        court.save.or_panic
+      end
+      assert Court[db].where(account_id: a.id).count.or_panic == 1_i64
+      # A record read by Model[db] may move.
+      free = Court[db].first.or_panic
+      if free
+        free.account_id = b.id
+        free.save.or_panic
+      end
+      assert Court[db].where(account_id: b.id).count.or_panic == 1_i64
+    end
+  end
+
+  it "returns ScopeError for a scoped case moved to another account" do
+    with_db do |db|
+      a = Account.create(db, name: "a").or_panic
+      Court.create(db, name: "x", account_id: a.id).or_panic
+      court = a.courts.first.or_panic
+      if court
+        made = court.cases.create(title: "t").or_panic
+        made.account_id = 999
+        assert made.save.is_a?(ScopeError)
+        made.account_id = a.id
+        made.court_id = 12345
+        assert made.update(title: "z").is_a?(ScopeError)
+      end
+    end
+  end
+end

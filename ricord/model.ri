@@ -65,6 +65,83 @@ pub def where_sql(store : Store, last : Int32, sql : String::Builder, binds : Ar
   nil
 end
 
+# The WHERE text of a node chain plus the inherited scope starting at *scope*
+# (-1 for none): `WHERE (<chain>) AND (`c` = ?) ...`.
+pub def scoped_where_sql(store : Store, last : Int32, scope : Int32, columns : Array(String), sql : String::Builder, binds : Array(DBValue), dialect : Dialect) : Nil
+  if scope < 0 || store.scope_cols[scope] < 0
+    where_sql(store, last, sql, binds, dialect)
+    return nil
+  end
+  if last >= 0
+    inner = String::Builder.new
+    where_sql(store, last, inner, binds, dialect)
+    text = inner.to_s
+    sql << " WHERE (" << text[7, text.bytesize - 7] << ")"
+  else
+    sql << " WHERE "
+  end
+  at = scope
+  first = last < 0
+  while store.scope_cols[at] >= 0
+    sql << " AND " unless first
+    first = false
+    value = store.scope_vals[at]
+    if value.nil?
+      sql << "(`" << columns[store.scope_cols[at]] << "` IS NULL)"
+    else
+      sql << "(`" << columns[store.scope_cols[at]] << "` = ?)"
+      push_db(binds, value, store, dialect)
+    end
+    at += 1
+  end
+  nil
+end
+
+# Starts a scope for a has_many query: (fk, owner id), then the owner's own
+# pairs mapped into the target by *map* (source column index => target column
+# index or -1), leaving out the fk. The new scope's start.
+pub def child_scope(store : Store, owner : Int32, fk : Int32, map : Array(Int32)) : Int32
+  start = store.scope_cols.size
+  store.add_scope_pair(fk, store.slot(owner, 0))
+  at = store.scopes[owner]
+  if at >= 0
+    while store.scope_cols[at] >= 0
+      target = map[store.scope_cols[at]]
+      store.add_scope_pair(target, store.scope_vals[at]) if target >= 0 && target != fk
+      at += 1
+    end
+  end
+  store.end_scope
+  start
+end
+
+# Sets each scope column of record *index* to its pair's value.
+pub def apply_scope(store : Store, index : Int32, scope : Int32) : Nil
+  return nil if scope < 0
+  at = scope
+  while store.scope_cols[at] >= 0
+    store.set_slot(index, store.scope_cols[at], store.scope_vals[at])
+    at += 1
+  end
+  nil
+end
+
+# The first scope column of record *index* whose value differs from its
+# pair's, or -1.
+pub def scope_violation(store : Store, index : Int32) : Int32
+  at = store.scopes[index]
+  return -1 if at < 0
+  while store.scope_cols[at] >= 0
+    col = store.scope_cols[at]
+    current = store.slot(index, col)
+    wanted = store.scope_vals[at]
+    same = current.is_a?(TextSpan) && wanted.is_a?(TextSpan) ? store.span_text(current) == store.span_text(wanted) : current == wanted
+    return col if store.changed?(index, col) && !same
+    at += 1
+  end
+  -1
+end
+
 # The next row, or the database's refusal as a `DatabaseError` (a constraint
 # failing on a `RETURNING` insert shows up here).
 pub def advance(rs : ResultSet, table : String) : Bool | DatabaseError
@@ -220,7 +297,7 @@ pub macro model(name, &block)
       {% if bt %}
         {% if e.args.size == 1 %}{% expand_refs = true %}{% end %}
         {% bcn = e.named_args.find { |na| na.name.stringify == "class_name" } %}
-        {% assocs << ["belongs_to", bt.value.id, (bcn ? bcn.value.id : bt.value.id.stringify.camelcase.id), e.args[0].id, cols.size + 1] %}
+        {% assocs << ["belongs_to", bt.value.id, (bcn ? bcn.value.id : bt.value.id.stringify.camelcase.id), e.args[0].id, cols.size + 1, ""] %}
       {% end %}
       {% cols << e %}
     {% elsif e.is_a?(Call) && (e.name == "has_many" || e.name == "has_one") %}
@@ -229,13 +306,17 @@ pub macro model(name, &block)
       {% afk = e.named_args && e.named_args.find { |na| na.name.stringify == "foreign_key" } %}
       {% if e.named_args %}
         {% for na in e.named_args %}
-          {% unless ["class_name", "foreign_key"].includes?(na.name.stringify) %}
+          {% unless ["class_name", "foreign_key", "dependent"].includes?(na.name.stringify) %}
             {% raise "model #{name}: #{e.name} #{an} has unknown option #{na.name}" %}
           {% end %}
         {% end %}
       {% end %}
+      {% adep = e.named_args && e.named_args.find { |na| na.name.stringify == "dependent" } %}
+      {% if adep && !["destroy", "delete_all", "nullify", "restrict"].includes?(adep.value.id.stringify) %}
+        {% raise "model #{name}: #{e.name} #{an} dependent: takes :destroy, :delete_all, :nullify or :restrict, not #{adep.value}" %}
+      {% end %}
       {% single = e.name == "has_many" ? (an.ends_with?("ies") ? an[0..-4] + "y" : (an.ends_with?("s") ? an[0..-2] : an)) : an %}
-      {% assocs << [e.name.stringify, an.id, (acn ? acn.value.id : single.camelcase.id), (afk ? afk.value.id : (name.stringify.underscore + "_id").id), -1] %}
+      {% assocs << [e.name.stringify, an.id, (acn ? acn.value.id : single.camelcase.id), (afk ? afk.value.id : (name.stringify.underscore + "_id").id), -1, (adep ? adep.value.id.stringify : "")] %}
     {% elsif e.is_a?(Call) && e.name == "cols" %}
       {% unless e.args.size == 1 && e.args[0].is_a?(SymbolLiteral) && e.args[0].id == "timestamps" %}
         {% raise "model #{name}: cols takes :timestamps" %}
@@ -669,6 +750,8 @@ pub macro model(name, &block)
     # callbacks, in its own write unless inside one (then a savepoint).
     def save : self | ::Ricord::Failures::Error
       return ::Ricord::Failures::DatabaseError.new(TABLE, "save", "record #{id} is destroyed") if destroyed?
+      scoped = ::Ricord::Model.scope_violation(store, index)
+      return ::Ricord::Failures::ScopeError.new(TABLE, COLUMNS[scoped]) if scoped >= 0
       refused = run_validations
       return refused if refused.is_a?(::Ricord::Failures::Failure)
       count = errors.size
@@ -876,6 +959,30 @@ pub macro model(name, &block)
         refused = {{m.id}}
         return ::Ricord::Failures::CallbackError.new(TABLE, "destroy", "before_destroy {{m.id}}") if refused.is_a?(::Ricord::Failures::Failure)
       {% end %}
+      # dependent: restrict first (nothing changed yet), then the other modes in
+      # declaration order, all before this row's DELETE.
+      {% for a in assocs %}
+        {% if a[5] == "restrict" %}
+          held = {{a[2]}}[tx].where({{a[3]}}: id).exists?
+          return held if held.is_a?(::Ricord::Failures::DatabaseError)
+          return ::Ricord::Failures::CallbackError.new(TABLE, "destroy", "dependent: :restrict {{a[1]}}") if held
+        {% end %}
+      {% end %}
+      {% for a in assocs %}
+        {% if a[5] == "delete_all" %}
+          tx.exec("DELETE FROM `#{{{a[2]}}::TABLE}` WHERE `{{a[3]}}` = ?", [id.as(::Db::Value::DBValue)])!
+        {% elsif a[5] == "nullify" %}
+          tx.exec("UPDATE `#{{{a[2]}}::TABLE}` SET `{{a[3]}}` = NULL WHERE `{{a[3]}}` = ?", [id.as(::Db::Value::DBValue)])!
+        {% elsif a[5] == "destroy" %}
+          children_{{a[1]}} = {{a[2]}}[tx].where({{a[3]}}: id).order(:id).to_a
+          return children_{{a[1]}} if children_{{a[1]}}.is_a?(::Ricord::Failures::DatabaseError)
+          children_{{a[1]}}.each do |child|
+            gone = child.destroy_in(tx)
+            return gone if gone.is_a?(::Ricord::Failures::Failure)
+            child.store.set_flag(child.index, ::Ricord::Storage::FLAG_DESTROYED, true)
+          end
+        {% end %}
+      {% end %}
       tx.exec("DELETE FROM `#{TABLE}` WHERE `id` = ?", [id.as(::Db::Value::DBValue)])!
       {% for m in callbacks["after_destroy"] %}
         refused = {{m.id}}
@@ -954,12 +1061,15 @@ pub macro model(name, &block)
       getter owner_assoc : Int32
       getter owner_fk : Int32
       getter bare : Bool
+      # The inherited scope: start in the store's scope pairs, -1 for none
+      # (`Model[db]`).
+      getter scope : Int32
 
-      def initialize(@session : ::Ricord::Sessions::Session, @last_where : Int32, @last_order : Int32, @limit_value : Int64 | Nil, @offset_value : Int64 | Nil, @includes : Int64 = 0_i64, @owner : Int32 = -1, @owner_assoc : Int32 = -1, @owner_fk : Int32 = -1, @bare : Bool = false)
+      def initialize(@session : ::Ricord::Sessions::Session, @last_where : Int32, @last_order : Int32, @limit_value : Int64 | Nil, @offset_value : Int64 | Nil, @includes : Int64 = 0_i64, @owner : Int32 = -1, @owner_assoc : Int32 = -1, @owner_fk : Int32 = -1, @bare : Bool = false, @scope : Int32 = -1)
       end
 
       private def chain(last_where : Int32, last_order : Int32, limit_value : Int64 | Nil, offset_value : Int64 | Nil) : Query
-        Query.new(session, last_where, last_order, limit_value, offset_value, @includes, @owner, @owner_assoc, @owner_fk, false)
+        Query.new(session, last_where, last_order, limit_value, offset_value, @includes, @owner, @owner_assoc, @owner_fk, false, @scope)
       end
 
       # Preloads the named associations of the records this query reads.
@@ -969,7 +1079,7 @@ pub macro model(name, &block)
           a = {{name.id}}.association_index(n)
           bits |= 1_i64 << a if a >= 0
         end
-        Query.new(session, @last_where, @last_order, @limit_value, @offset_value, bits, @owner, @owner_assoc, @owner_fk, @bare)
+        Query.new(session, @last_where, @last_order, @limit_value, @offset_value, bits, @owner, @owner_assoc, @owner_fk, @bare, @scope)
       end
 
       # A typed condition per column given; `Array` is IN, `Range` is between.
@@ -1010,7 +1120,7 @@ pub macro model(name, &block)
 
       def build_sql(selection : String, sql : String::Builder, args : Array(::Db::Value::DBValue), flip : Bool = false) : Nil
         sql << "SELECT " << selection << " FROM `" << TABLE << '`'
-        ::Ricord::Model.where_sql(session.store, @last_where, sql, args, session.dialect)
+        ::Ricord::Model.scoped_where_sql(session.store, @last_where, @scope, COLUMNS, sql, args, session.dialect)
         ::Ricord::Model.order_sql(session.store, @last_order, COLUMNS, sql, flip)
         session.dialect.limit_offset(@limit_value, @offset_value, sql)
         nil
@@ -1065,6 +1175,7 @@ pub macro model(name, &block)
             index = s.store.add_record(MODEL_ID, COLUMNS.size, ASSOCIATION_COUNT)
             read = {{name.id}}.read_row(s.store, index, rs, s.dialect)
             problem = read if read.is_a?(::Ricord::Failures::DatabaseError)
+            s.store.scopes[index] = @scope
           end
           problem
         end
@@ -1098,6 +1209,7 @@ pub macro model(name, &block)
           elsif m
             index = s.store.add_record(MODEL_ID, COLUMNS.size, ASSOCIATION_COUNT)
             read = {{name.id}}.read_row(s.store, index, rs, s.dialect)
+            s.store.scopes[index] = @scope
             read.is_a?(::Ricord::Failures::DatabaseError) ? read : index
           else
             -1
@@ -1174,17 +1286,45 @@ pub macro model(name, &block)
       # to the owner's id, and the owner's loaded range is dropped so the next
       # read sees the record. Named `build`, not `new`: ris treats an instance
       # method `new` as in-place construction, which may not grow the store.
+      # Through a scoped query the scope columns are set and the record keeps
+      # the scope.
       def build(**attrs) : {{name.id}}
         index = {{name.id}}.new(session, **attrs).index
         if @owner >= 0
           session.store.set_slot(index, @owner_fk, session.store.slot(@owner, 0))
           ::Ricord::Associations.unload(session.store, @owner, @owner_assoc)
         end
+        ::Ricord::Model.apply_scope(session.store, index, @scope)
+        session.store.scopes[index] = @scope
         {{name.id}}.new(session, session.store, index)
       end
 
       def create(**attrs) : {{name.id}} | ::Ricord::Failures::Error
         build(**attrs).save
+      end
+
+      # One `UPDATE` of the given columns over the matching rows (the scope
+      # included), no callbacks: the rows changed. Its own write unless inside one.
+      def update_all(**cols) : Int64 | ::Ricord::Failures::DatabaseError
+        s = session
+        sets = ""
+        args = [] of ::Db::Value::DBValue
+        cols.each do |key, value|
+          col = {{name.id}}.column_index(key)
+          sets << ", " unless sets.empty?
+          sets << '`' << COLUMNS[col] << (BLOB_COLUMNS[col] ? "` = unhex(?)" : "` = ?")
+          ::Ricord::Model.push_db(args, ::Ricord::Model.bind_value(s.store, value), s.store, s.dialect)
+        end
+        return 0_i64 if sets.empty?
+        sql = String::Builder.new
+        sql << "UPDATE `" << TABLE << "` SET " << sets
+        ::Ricord::Model.scoped_where_sql(s.store, @last_where, @scope, COLUMNS, sql, args, s.dialect)
+        text = sql.to_s
+        return s.run(text, args) if s.state.depth > 0
+        written = s.write { |tx| tx.exec(text, args) }
+        # Its own write queues no after-commit item, so only the UPDATE fails.
+        return written if written.is_a?(Int64) || written.is_a?(::Ricord::Failures::DatabaseError)
+        ::Ricord::Failures::DatabaseError.new(TABLE, "update_all", written.message)
       end
 
       # The number of rows, as `count`.
@@ -1198,6 +1338,19 @@ pub macro model(name, &block)
       when :id then 0
       {% for c, i in cols %}
       when {{c.args[0]}} then {{i + 1}}
+      {% end %}
+      else
+        -1
+      end
+    end
+
+    # The index of a column by name, -1 for none: maps a scope pair's column
+    # from another model into this one.
+    def self.column_named(column : String) : Int32
+      case column
+      when "id" then 0
+      {% for c, i in cols %}
+      when {{c.args[0].id.stringify}} then {{i + 1}}
       {% end %}
       else
         -1
@@ -1313,9 +1466,14 @@ pub macro model(name, &block)
       {% else %}
         # has_many {{an}}: the {{target}} rows whose {{fk}} is this id, as a query.
         def {{an}} : {{target}}::Query
-          q = {{target}}[session].where({{fk}}: id)
-          {{target}}::Query.new(session, q.last_where, -1, nil, nil, 0_i64, index, {{ai}}, {{target}}.column_index({{fk.symbolize}}), true)
+          fk = {{target}}.column_index({{fk.symbolize}})
+          scope = ::Ricord::Model.child_scope(store, index, fk, SCOPE_MAP_{{an.id.upcase}})
+          {{target}}::Query.new(session, -1, -1, nil, nil, 0_i64, index, {{ai}}, fk, true, scope)
         end
+
+        # Scope column matching for {{an}}: each column of this model to the
+        # same-named column of {{target}}, or -1.
+        SCOPE_MAP_{{an.id.upcase}} = [{% for c in ["id"] + cols.map { |c| c.args[0].id.stringify } %}{{target}}.column_named({{c}}), {% end %}]
 
         # `includes(:{{an}})`: every owner's children in one query per 1,000
         # owners, ordered by {{fk}}, id so each owner's children are contiguous.

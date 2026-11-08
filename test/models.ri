@@ -28,6 +28,8 @@ model Case do
   table :cases
   col :court_id, belongs_to: :court, on_delete: :restrict
   col :title, :string
+  # Inherits an account scope through court.cases (test/scope_test.ri).
+  col :account_id, :int64, null: true
 end
 
 model User do

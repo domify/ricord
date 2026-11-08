@@ -1,4 +1,4 @@
-completed: M1, M2
+completed: M1, M2, M3
 
 | file | verdict | target | milestone | reason | done |
 |---|---|---|---|---|---|
@@ -21,9 +21,9 @@ completed: M1, M2
 | test/grant_adapter_read_tape_test.ri | drop |  |  | adapter and config layer replaced by Ricord.open and the URI scheme | |
 | test/grant_associations_belongs_to_extras_test.ri | port | test/association_test.ri | M3 | the writer sets the key and marks it changed; belongs_to default:, the required-parent validation and saving an unsaved parent with the child are not in doc/DESIGN.md | x |
 | test/grant_associations_collection_build_create_test.ri | port | test/association_test.ri | M3 | build/create through has_many set the key, an invalid record is returned unsaved with errors, a loaded collection sees a created record; `new` through the association is named `build` (ris treats an instance method `new` as in-place construction, which may not grow the store); block, Hash and Array forms, inverse_of and RecordNotSaved for an unsaved owner are not in doc/DESIGN.md | x |
-| test/grant_associations_collection_methods_test.ri | port | test/association_test.ri | M3 | build/create ported (M3 part A); delete_all/destroy_all through the association wait for the M4 Query methods | |
+| test/grant_associations_collection_methods_test.ri | port | test/association_test.ri | M4 | build/create ported (M3 part A); left: delete_all/destroy_all through the association, which need the M4 Query methods | |
 | test/grant_associations_collection_query_methods_test.ri | port | test/association_test.ri | M3 | count, size, exists?/any?/empty? on loaded and unloaded associations; default scopes are not in doc/DESIGN.md | x |
-| test/grant_associations_dependent_delete_all_test.ri | port | test/association_test.ri | M3 | dependent: is M3 part B | |
+| test/grant_associations_dependent_delete_all_test.ri | port | test/dependent_test.ri | M3 | has_many and has_one dependent: :delete_all with one DELETE and no child callbacks; Grant's has_one `dependent: :delete` is `:delete_all` | x |
 | test/grant_associations_has_many_foreign_key_forms_test.ri | port | test/association_test.ri | M3 | foreign_key: takes a Symbol; the bare-identifier form is Grant syntax | x |
 | test/grant_associations_has_many_test.ri | port | test/association_test.ri | M3 | count/size, raw where with order, find_by, find; find_by!/find! are find_by/find returning nil/RecordNotFound; a custom primary key is not in doc/DESIGN.md (id is the key) | x |
 | test/grant_associations_has_many_through_test.ri | defer |  |  | has_many :through is in Future Improvements | |
@@ -31,7 +31,7 @@ completed: M1, M2
 | test/grant_associations_has_one_through_test.ri | defer |  |  | has_one :through is in Future Improvements | |
 | test/grant_associations_polymorphic_simple_test.ri | defer |  |  | polymorphic associations are in Future Improvements | |
 | test/grant_associations_w6_collection_finders_test.ri | port | test/association_test.ri | M3 | first/last with LIMIT, other owners' rows not found, a loaded collection answers without a query; first(n), take, second..forty_two and find(ids) are not in the design's query API; the :through part is in Future Improvements | x |
-| test/grant_associations_w6_collection_relation_test.ri | port | test/association_test.ri | M3 | order/limit through the association ported; pluck, aggregates, distinct, batches and joins wait for M4 | |
+| test/grant_associations_w6_collection_relation_test.ri | port | test/association_test.ri | M4 | order/limit through the association ported (M3); left: pluck, aggregates, distinct, batches and joins, which are M4 | |
 | test/grant_attribute_api_test.ri | defer |  |  | attribute API extras are not in v1 | |
 | test/grant_attributes_alias_attribute_test.ri | defer |  |  | attribute API extras are not in v1 | |
 | test/grant_attributes_assign_attributes_test.ri | defer |  |  | attribute API extras are not in v1 | |

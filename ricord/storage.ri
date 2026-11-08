@@ -55,6 +55,10 @@ pub class Store
   getter changed = [] of Bool
   getter flags = [] of UInt8
   getter scopes = [] of Int32
+  # Each scope's pairs as (column index, value) in two parallel arrays, ended
+  # by column -1.
+  getter scope_cols = [] of Int32
+  getter scope_vals = [] of Value
   getter groups = [] of Int32
   getter link_starts = [] of Int32
   getter link_ranges = [] of Int32
@@ -175,6 +179,18 @@ pub class Store
   def add_where(prev : Int32, op : UInt8, sql : String, bind_start : Int32, bind_count : Int32) : Int32
     @wheres << WhereNode.new(prev, op, add_text(sql), bind_start, bind_count)
     @wheres.size - 1
+  end
+
+  # Appends one scope pair (a scope ends with `end_scope`).
+  def add_scope_pair(col : Int32, value : Value) : Nil
+    @scope_cols << col
+    @scope_vals << value
+  end
+
+  # Ends the scope being appended.
+  def end_scope : Nil
+    @scope_cols << -1
+    @scope_vals << nil
   end
 
   def add_bind(value : Value) : Int32
